@@ -1,0 +1,15 @@
+{
+  "app_name": "Nukumi",
+  "app_subtitle": "Field Support",
+  "domain_role": "HVAC and BMS controls technician",
+  "domain_equipment_examples": "TC500A, TC300A, CIPer 30, Eaglehawk, Spyder, WEB-8000, Optimizer, KitControl, IRM",
+  "query_good_examples": [
+    "How do I set the baud rate on a BACnet MSTP port?",
+    "What is the default IP address for the Web-8000?",
+    "Where can I find the wiring diagram for the CIPer 30?"
+  ],
+  "query_bad_examples": [
+    "BACnet MSTP baud rate",
+    "CIPer 30 wiring"
+  ]
+}

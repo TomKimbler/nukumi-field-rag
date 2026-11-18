@@ -1,0 +1,11 @@
+accelerate
+cryptography
+datasets
+fonttools
+ollama
+pip
+pypdf
+sentence-transformers
+torch
+tqdm
+transformers

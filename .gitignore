@@ -1,0 +1,27 @@
+# Local notes & secrets (never commit)
+notes.txt
+.access_pin
+feedback_log.csv
+
+# Archived / legacy files
+archive/
+
+# User-provided PDFs (keep folder structure via .gitkeep, ignore actual PDFs)
+pdfFiles/*.pdf
+pdfFiles/*.PDF
+!pdfFiles/.gitkeep
+
+# Generated datasets & trained model weights (generated locally via pipeline)
+search_corpus_dataset/
+tokenized_pdf_dataset/
+bert-sentence-transformer/
+bert-finetuned-optimizer/
+custom_tokenizer/
+synthetic_queries.csv
+checkpoints/
+src/checkpoints/
+
+# Python / IDE environments
+.venv/
+__pycache__/
+*.pyc
