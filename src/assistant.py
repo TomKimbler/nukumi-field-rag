@@ -16,8 +16,10 @@ import threading
 import ollama
 import torch
 from sentence_transformers import SentenceTransformer
+from optiDataset import iter_active_pdf_files
 from test_search import (
     BM25Index,
+    filter_active_corpus,
     hybrid_search,
     load_or_build_corpus,
     load_or_compute_embeddings,
@@ -207,11 +209,10 @@ def format_rag_prompt(
 
 
 def get_manual_count(file_names: list[str]) -> int:
-    """Count PDF manuals in ./pdfFiles, falling back to unique manual names in the indexed corpus."""
-    if os.path.exists(pdf_dir):
-        pdf_count = sum(1 for f in os.listdir(pdf_dir) if f.lower().endswith(".pdf"))
-        if pdf_count > 0:
-            return pdf_count
+    """Count active PDF manuals in ./pdfFiles (including subfolders, excluding ignore_/exclude_)."""
+    active_pdfs = iter_active_pdf_files(pdf_dir)
+    if active_pdfs:
+        return len(active_pdfs)
     return len(set(file_names))
 
 
@@ -285,6 +286,10 @@ def main():
     paragraph_embeddings = load_or_compute_embeddings(retriever, paragraphs)
     if retriever.device.type == "cpu":
         paragraph_embeddings = paragraph_embeddings.cpu()
+    paragraphs, file_names, pages, paragraph_embeddings = filter_active_corpus(
+        paragraphs, file_names, pages, paragraph_embeddings
+    )
+    manual_count = get_manual_count(file_names)
 
     print(f"Building BM25 lexical index over {len(paragraphs)} paragraphs ({manual_count} manuals)...")
     bm25_index = BM25Index(paragraphs, file_names=file_names)

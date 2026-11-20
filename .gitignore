@@ -6,9 +6,9 @@ feedback_log.csv
 # Archived / legacy files
 archive/
 
-# User-provided PDFs (keep folder structure via .gitkeep, ignore actual PDFs)
-pdfFiles/*.pdf
-pdfFiles/*.PDF
+# User-provided PDFs (keep folder structure via .gitkeep, ignore actual PDFs including subfolders)
+pdfFiles/**/*.pdf
+pdfFiles/**/*.PDF
 !pdfFiles/.gitkeep
 
 # Generated datasets & trained model weights (generated locally via pipeline)

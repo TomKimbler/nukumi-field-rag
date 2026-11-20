@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 import torch
 from datasets import Dataset, load_from_disk
 from sentence_transformers import SentenceTransformer, util
-from optiDataset import generate_corpus_paragraphs
+from optiDataset import generate_corpus_paragraphs, iter_active_pdf_files
 
 # 1. Configuration & Paths
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -227,6 +227,44 @@ def load_or_compute_embeddings(model: SentenceTransformer, paragraphs: list[str]
     return embeddings
 
 
+def filter_active_corpus(
+    paragraphs: list[str],
+    file_names: list[str],
+    pages: list[int],
+    paragraph_embeddings: torch.Tensor,
+) -> tuple[list[str], list[str], list[int], torch.Tensor]:
+    """
+    Live subfolder exclusion filter: if `pdfFiles/` exists, check which PDFs are currently
+    active (not inside an `ignore_` or `exclude_` folder or prefixed with `ignore_`/`exclude_`).
+    Any excluded PDFs are masked out in memory without invalidating `corpus_embeddings.pt`.
+    """
+    if not os.path.exists(pdf_dir):
+        return paragraphs, file_names, pages, paragraph_embeddings
+
+    active_pdfs = iter_active_pdf_files(pdf_dir)
+    if not active_pdfs:
+        return paragraphs, file_names, pages, paragraph_embeddings
+
+    active_names = {fname for fname, _ in active_pdfs}
+    keep_indices = [i for i, fname in enumerate(file_names) if fname in active_names]
+
+    if len(keep_indices) == len(paragraphs) or len(keep_indices) == 0:
+        return paragraphs, file_names, pages, paragraph_embeddings
+
+    excluded_Paragraphs = len(paragraphs) - len(keep_indices)
+    excluded_files = len(set(file_names) - active_names)
+    print(
+        f"Live filter: excluded {excluded_files} manual(s) ({excluded_Paragraphs} paragraphs) "
+        f"marked with ignore_/exclude_."
+    )
+    filtered_paragraphs = [paragraphs[i] for i in keep_indices]
+    filtered_files = [file_names[i] for i in keep_indices]
+    filtered_pages = [pages[i] for i in keep_indices]
+    idx_tensor = torch.tensor(keep_indices, dtype=torch.long, device=paragraph_embeddings.device)
+    filtered_embeddings = paragraph_embeddings.index_select(0, idx_tensor)
+    return filtered_paragraphs, filtered_files, filtered_pages, filtered_embeddings
+
+
 def main():
     if not os.path.exists(model_path):
         print(f"Error: Model not found at {model_path}. Did you run train_st.py?")
@@ -245,6 +283,9 @@ def main():
     pages = list(corpus_dataset["page"])
 
     paragraph_embeddings = load_or_compute_embeddings(model, paragraphs)
+    paragraphs, file_names, pages, paragraph_embeddings = filter_active_corpus(
+        paragraphs, file_names, pages, paragraph_embeddings
+    )
 
     print(f"Building BM25 lexical index for {len(paragraphs)} paragraphs...")
     bm25_index = BM25Index(paragraphs, file_names=file_names)

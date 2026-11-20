@@ -2,6 +2,7 @@
 PDF Corpus Extraction and Cleaning Pipeline.
 
 Extracts clean paragraphs with source manual filename and page metadata from pdfFiles/
+(including subfolders, while skipping any subfolder or file starting with `ignore_` or `exclude_`)
 and saves them to search_corpus_dataset/ for Hybrid Search (ModernBERT + BM25) and RAG.
 """
 
@@ -15,6 +16,49 @@ project_root = os.path.dirname(script_dir)
 
 pdf_dir = os.path.join(project_root, "pdfFiles")
 corpus_output_dir = os.path.join(project_root, "search_corpus_dataset")
+
+EXCLUDED_PREFIXES = ("ignore_", "exclude_", ".")
+
+
+def is_excluded_name(name: str) -> bool:
+    """Return True if a directory or filename starts with 'ignore_', 'exclude_', or '.'."""
+    return name.lower().startswith(EXCLUDED_PREFIXES)
+
+
+def iter_active_pdf_files(pdf_directory: str) -> list[tuple[str, str]]:
+    """
+    Recursively walk `pdf_directory` and return a sorted list of `(filename, full_path)`
+    for all active PDFs, pruning any subfolder or file starting with `ignore_` or `exclude_`.
+    """
+    if not os.path.exists(pdf_directory):
+        return []
+
+    active_pdfs: list[tuple[str, str]] = []
+    for root, dirs, files in os.walk(pdf_directory):
+        # Prune excluded subdirectories in-place so os.walk never descends into them
+        dirs[:] = sorted(d for d in dirs if not is_excluded_name(d))
+        for filename in sorted(files):
+            if is_excluded_name(filename):
+                continue
+            if filename.lower().endswith(".pdf"):
+                active_pdfs.append((filename, os.path.join(root, filename)))
+
+    return active_pdfs
+
+
+def find_active_pdf_path(pdf_directory: str, target_filename: str) -> str | None:
+    """
+    Locate `target_filename` inside `pdf_directory` or any of its active (non-excluded)
+    subfolders. Returns None if not found or if located inside an `ignore_`/`exclude_` folder.
+    """
+    safe_target = os.path.basename(target_filename)
+    if not safe_target or is_excluded_name(safe_target):
+        return None
+
+    for filename, full_path in iter_active_pdf_files(pdf_directory):
+        if filename == safe_target:
+            return full_path
+    return None
 
 
 def clean_pdf_text(text: str) -> str:
@@ -69,24 +113,25 @@ def generate_corpus_paragraphs(pdf_directory: str):
         print(f"Error: Directory {pdf_directory} does not exist.")
         return
 
-    for filename in sorted(os.listdir(pdf_directory)):
-        if filename.endswith(".pdf"):
-            pdf_path = os.path.join(pdf_directory, filename)
-            try:
-                reader = PdfReader(pdf_path)
-                for page_idx, page in enumerate(reader.pages, start=1):
-                    extracted = page.extract_text()
-                    if not extracted:
-                        continue
-                    cleaned = clean_pdf_text(extracted)
-                    for para in split_into_paragraphs(cleaned):
-                        yield {
-                            "file_name": filename,
-                            "page": page_idx,
-                            "paragraph": para,
-                        }
-            except Exception as e:
-                print(f"Error reading {filename}: {e}")
+    active_pdfs = iter_active_pdf_files(pdf_directory)
+    print(f"Found {len(active_pdfs)} active PDF manuals in {pdf_directory} (excluding ignore_/exclude_).")
+
+    for filename, pdf_path in active_pdfs:
+        try:
+            reader = PdfReader(pdf_path)
+            for page_idx, page in enumerate(reader.pages, start=1):
+                extracted = page.extract_text()
+                if not extracted:
+                    continue
+                cleaned = clean_pdf_text(extracted)
+                for para in split_into_paragraphs(cleaned):
+                    yield {
+                        "file_name": filename,
+                        "page": page_idx,
+                        "paragraph": para,
+                    }
+        except Exception as e:
+            print(f"Error reading {filename}: {e}")
 
 
 def main():

@@ -10,6 +10,8 @@ A domain-adapted **Hybrid Search (ModernBERT + BM25)** and conversational **RAG 
 - **Self-Improving Feedback Loop (`👍 / 👎 / 🎯 Best Match`)**: Technicians can rate answers or mark specific manual excerpts as the `🎯 Best Match` directly on their phone; `train_st.py` automatically folds `👍` pairs from `feedback_log.csv` into the next training run at 2× weight.
 - **Mobile PWA with Clickable PDF Page Citations**: Zero-dependency Python HTTP server (`127.0.0.1:8000`) with a dark-mode mobile UI, 6-digit PIN gate (`.access_pin`), model lock pill (`🔒`), collapsible verbatim citations drawer, and clickable `📄 Source: Manual.pdf (Page X)` links that open the PDF right to Page `X`.
 - **Multi-Turn Field Context**: Automatically carries equipment context across follow-up questions (*"How do I factory reset it?"*) and enforces explicit device attribution so model-specific procedures are never mistaken for universal rules.
+- **Universal Engineering Math & Physics Formulas**: Keeps proprietary equipment specs (terminals, BACnet IDs, DIP switches) strictly locked to your PDF manuals while seamlessly solving field calculations (Ohm's/Watt's Law, electric heater BTU/hr output, airflow/hydronic heat transfer, gas laws, 4–20mA / 0–10VDC signal scaling) with step-by-step formulas and a distinct `🧮 Source: Standard Engineering Formula (Not from PDF Manual)` badge.
+- **Subfolder Organization & Instant `ignore_` / `exclude_` Filtering**: Organize `pdfFiles/` into any subfolder hierarchy. Prefixing any subfolder or PDF filename with `ignore_` or `exclude_` (e.g., `pdfFiles/ignore_Legacy_AX/`) masks those manuals out of live search and query generation immediately on startup—without even needing to rebuild your vector cache (`corpus_embeddings.pt`).
 
 ---
 
@@ -47,7 +49,7 @@ ollama pull gemma4:e2b
 ```
 
 ### 3. Add Your PDF Manuals & Configure Your Domain
-1. Place your `.pdf` technical manuals inside the **`pdfFiles/`** directory.
+1. Place your `.pdf` technical manuals inside the **`pdfFiles/`** directory (subfolders are scanned recursively; prefix any subfolder or file with `ignore_` or `exclude_` to temporarily exclude it from search without moving files out of `pdfFiles/`).
 2. *(Optional)* If adapting for an industry other than HVAC/BMS (e.g., industrial PLC/automation, automotive/diesel service, medical devices, aviation, IT runbooks):
    - Edit **[`config.json`](config.json)** to set your `app_name`, `domain_role`, `domain_equipment_examples`, and sample questions.
    - Update the `SYSTEM` persona line in **[`Modelfile`](Modelfile)** to match your trade.

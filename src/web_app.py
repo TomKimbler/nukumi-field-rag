@@ -39,8 +39,10 @@ from assistant import (
     retrieve_context_hits,
 )
 from generate_queries import load_domain_config
+from optiDataset import find_active_pdf_path
 from test_search import (
     BM25Index,
+    filter_active_corpus,
     load_or_build_corpus,
     load_or_compute_embeddings,
     model_path,
@@ -492,6 +494,16 @@ MOBILE_HTML = r"""<!DOCTYPE html>
           return `<a class="pdf-link" href="${url}" target="_blank">📄 ${cleanFile} (Page ${page}) ↗</a>`;
         }
       );
+      // Style 🧮 or 📄 Source: Standard Engineering Formula badge
+      text = text.replace(
+        /(?:🧮|📄)\s*Source:\s*(Standard Engineering Formula[^\n]*)/gi,
+        (_, label) => `<span class="pdf-link" style="color:#fcd34d;border-color:rgba(252,211,77,0.4);background:rgba(252,211,77,0.12);">🧮 Source: ${label.trim()}</span>`
+      );
+      // Clean any raw LaTeX math tokens if emitted by the LLM
+      text = text.replace(/\\mathbf\{([^}]*)\}/g, '**$1**');
+      text = text.replace(/\\text\{([^}]*)\}/g, '$1');
+      text = text.replace(/\\approx/g, '≈').replace(/\\times/g, '×').replace(/\\div/g, '÷');
+      text = text.replace(/\$([^$\n]+)\$/g, '$1');
       text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
       text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
 
@@ -861,9 +873,9 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
             if not safe_name.lower().endswith(".pdf") or safe_name != raw_name:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid PDF filename"})
                 return
-            full_pdf_path = os.path.join(pdf_dir, safe_name)
-            if not os.path.isfile(full_pdf_path):
-                self._send_json(HTTPStatus.NOT_FOUND, {"error": "PDF manual not found"})
+            full_pdf_path = find_active_pdf_path(pdf_dir, safe_name)
+            if not full_pdf_path or not os.path.isfile(full_pdf_path):
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "PDF manual not found or excluded"})
                 return
             self._serve_pdf_file(full_pdf_path)
             return
@@ -1139,6 +1151,10 @@ def main():
     paragraph_embeddings = load_or_compute_embeddings(retriever, paragraphs)
     if retriever.device.type == "cpu":
         paragraph_embeddings = paragraph_embeddings.cpu()
+    paragraphs, file_names, pages, paragraph_embeddings = filter_active_corpus(
+        paragraphs, file_names, pages, paragraph_embeddings
+    )
+    manual_count = get_manual_count(file_names)
 
     print(f"Building BM25 lexical index over {len(paragraphs)} paragraphs ({manual_count} manuals)...")
     bm25_index = BM25Index(paragraphs, file_names=file_names)

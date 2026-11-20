@@ -7,7 +7,7 @@ import ollama
 from datasets import load_from_disk
 from pypdf import PdfReader
 from tqdm import tqdm
-from optiDataset import clean_pdf_text, split_into_paragraphs
+from optiDataset import clean_pdf_text, iter_active_pdf_files, split_into_paragraphs
 
 # Configuration
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -86,7 +86,13 @@ Search Query:"""
 
 
 def load_all_paragraphs() -> list[dict[str, str]]:
-    """Load cleaned paragraphs with their source file_name from search_corpus_dataset or raw PDFs."""
+    """
+    Load cleaned paragraphs with their source file_name from search_corpus_dataset or raw PDFs,
+    automatically excluding any PDF inside an `ignore_` or `exclude_` folder.
+    """
+    active_pdfs = iter_active_pdf_files(pdf_dir)
+    active_names = {fname for fname, _ in active_pdfs} if active_pdfs else None
+
     if os.path.exists(corpus_path):
         print(f"Loading cleaned paragraphs from {corpus_path}...")
         dataset = load_from_disk(corpus_path)
@@ -94,20 +100,20 @@ def load_all_paragraphs() -> list[dict[str, str]]:
             {"file_name": row["file_name"], "paragraph": row["paragraph"]}
             for row in dataset
             if len(row["paragraph"]) >= 150
+            and (active_names is None or row["file_name"] in active_names)
         ]
 
     print("Extracting and cleaning paragraphs from raw PDFs...")
-    if not os.path.exists(pdf_dir):
-        print(f"Error: Directory {pdf_dir} does not exist.")
+    if not active_pdfs:
+        print(f"Error: No active PDFs found in {pdf_dir}.")
         return []
 
     all_records = []
-    pdf_files = [f for f in os.listdir(pdf_dir) if f.endswith(".pdf")]
+    shuffled_pdfs = list(active_pdfs)
     random.seed(42)
-    random.shuffle(pdf_files)
+    random.shuffle(shuffled_pdfs)
 
-    for filename in pdf_files:
-        pdf_path = os.path.join(pdf_dir, filename)
+    for filename, pdf_path in shuffled_pdfs:
         try:
             reader = PdfReader(pdf_path)
             for page in reader.pages:
