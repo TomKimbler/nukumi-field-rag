@@ -1,22 +1,21 @@
 """
-Nukumi Mobile PWA Field Support Server (Tailscale Serve / Funnel Ready).
+Nukumi Mobile & Tablet PWA Field Support Server (Tailscale Serve / Funnel Ready).
 
 Zero-external-dependency HTTP server (Python stdlib `http.server.ThreadingHTTPServer`)
 that wraps the Hybrid Search (ModernBERT + BM25 RRF) and Ollama RAG assistant into a
-mobile-first Progressive Web App (PWA) for field technicians.
+Progressive Web App (PWA) with hot-swappable HTML themes in `themes/*.html`.
 
 Security features:
 - Binds to 127.0.0.1:8000 by default (accessible only via local Tailscale Funnel/Serve proxy).
 - Passcode / PIN gate stored in `.access_pin` (or `ACCESS_PIN` env var) with HMAC-SHA256 cookies.
 - Brute-force rate limiter (locks out after 5 failed PIN attempts for 60 seconds).
-- Strict path-traversal protection on `/pdf/<filename>`.
+- Strict path-traversal protection on `/pdf/<filename>` and `themes/<theme>.html`.
 """
 
 import hashlib
 import hmac
 import json
 import os
-import re
 import secrets
 import threading
 import time
@@ -39,7 +38,7 @@ from assistant import (
     retrieve_context_hits,
 )
 from generate_queries import load_domain_config
-from optiDataset import find_active_pdf_path
+from optiDataset import find_active_pdf_path, is_excluded_name
 from test_search import (
     BM25Index,
     filter_active_corpus,
@@ -52,6 +51,8 @@ from test_search import (
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 pin_file_path = os.path.join(project_root, ".access_pin")
+themes_dir = os.path.join(project_root, "themes")
+DEFAULT_THEME = "slate-dark"
 
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
@@ -66,6 +67,47 @@ MAX_FAILURES = 5
 LOCKOUT_SECONDS = 60.0
 
 SERVER_SECRET = secrets.token_bytes(32)
+
+
+def list_available_themes() -> list[dict[str, str]]:
+    """
+    Scan `themes/*.html` for available HTML themes (ignoring files prefixed with
+    `ignore_`, `exclude_`, or `.`).
+    """
+    if not os.path.exists(themes_dir):
+        return []
+
+    theme_ids = []
+    for fname in sorted(os.listdir(themes_dir)):
+        if is_excluded_name(fname):
+            continue
+        if fname.lower().endswith(".html"):
+            theme_ids.append(os.path.splitext(fname)[0])
+
+    # Keep DEFAULT_THEME first if present
+    if DEFAULT_THEME in theme_ids:
+        theme_ids.remove(DEFAULT_THEME)
+        theme_ids.insert(0, DEFAULT_THEME)
+
+    return [
+        {"id": tid, "label": tid.replace("-", " ").replace("_", " ").title()}
+        for tid in theme_ids
+    ]
+
+
+def resolve_theme_html(requested_theme: str | None) -> tuple[str, bytes]:
+    """
+    Resolve a requested theme ID to a valid `themes/<id>.html` file on disk,
+    falling back to `slate-dark.html` or the first available `.html` theme.
+    """
+    available = [t["id"] for t in list_available_themes()]
+    if not available:
+        return "none", b"<h1>Error: No .html themes found in themes/ directory.</h1>"
+
+    chosen = requested_theme if (requested_theme in available) else available[0]
+    theme_path = os.path.join(themes_dir, f"{chosen}.html")
+    with open(theme_path, "rb") as f:
+        return chosen, f.read()
 
 
 def load_or_create_access_pin() -> str:
@@ -100,6 +142,7 @@ def get_session(session_id: str) -> dict:
                 "last_search_query": "",
                 "last_hits": [],
                 "active_device": None,
+                "theme": DEFAULT_THEME,
                 "updated_at": time.time(),
             }
         SESSIONS[session_id]["updated_at"] = time.time()
@@ -130,597 +173,6 @@ MANIFEST_JSON = json.dumps({
         }
     ],
 })
-
-MOBILE_HTML = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#0f172a" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <link rel="manifest" href="/manifest.json" />
-  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="/icon.svg" />
-  <title>Nukumi Field Support</title>
-  <style>
-    :root {
-      --bg: #0f172a;
-      --panel: #1e293b;
-      --panel-alt: #334155;
-      --text: #f8fafc;
-      --muted: #94a3b8;
-      --accent: #38bdf8;
-      --accent-dark: #0284c7;
-      --warn-bg: #451a03;
-      --warn-border: #f59e0b;
-      --border: #334155;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      height: 100dvh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-    /* Header */
-    header {
-      background: var(--panel);
-      border-bottom: 1px solid var(--border);
-      padding: 10px 14px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      flex-shrink: 0;
-    }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-weight: 700;
-      font-size: 1rem;
-    }
-    .brand-sub {
-      font-size: 0.72rem;
-      color: var(--muted);
-      font-weight: 400;
-    }
-    .controls {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .pill-btn {
-      background: var(--panel-alt);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 6px 11px;
-      font-size: 0.78rem;
-      font-weight: 600;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      white-space: nowrap;
-    }
-    .pill-btn.active {
-      background: rgba(56, 189, 248, 0.18);
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-    /* Chat area */
-    #chat {
-      flex: 1;
-      overflow-y: auto;
-      padding: 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      scroll-behavior: smooth;
-    }
-    .msg {
-      max-width: 92%;
-      padding: 11px 14px;
-      border-radius: 14px;
-      font-size: 0.95rem;
-      line-height: 1.48;
-      word-wrap: break-word;
-    }
-    .msg.user {
-      align-self: flex-end;
-      background: var(--accent-dark);
-      color: #fff;
-      border-bottom-right-radius: 4px;
-    }
-    .msg.bot {
-      align-self: flex-start;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-bottom-left-radius: 4px;
-      width: 100%;
-    }
-    .msg.bot p { margin-bottom: 8px; }
-    .msg.bot p:last-child { margin-bottom: 0; }
-    .msg.bot ol, .msg.bot ul { margin: 6px 0 8px 20px; }
-    .msg.bot li { margin-bottom: 4px; }
-    .msg.bot strong { color: #7dd3fc; font-weight: 700; }
-    .msg.bot code {
-      background: #0f172a;
-      padding: 2px 5px;
-      border-radius: 4px;
-      font-family: ui-monospace, monospace;
-      font-size: 0.86em;
-      color: #fcd34d;
-    }
-    .warn-box {
-      background: var(--warn-bg);
-      border-left: 4px solid var(--warn-border);
-      padding: 8px 10px;
-      border-radius: 6px;
-      margin-bottom: 8px;
-      font-weight: 600;
-      color: #fde68a;
-    }
-    .pdf-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      margin-top: 6px;
-      padding: 5px 10px;
-      background: rgba(56, 189, 248, 0.14);
-      border: 1px solid rgba(56, 189, 248, 0.4);
-      border-radius: 8px;
-      color: var(--accent);
-      text-decoration: none;
-      font-size: 0.82rem;
-      font-weight: 600;
-    }
-    /* Citations accordion */
-    details.citations {
-      margin-top: 10px;
-      border-top: 1px solid var(--border);
-      padding-top: 8px;
-      font-size: 0.8rem;
-    }
-    details.citations summary {
-      cursor: pointer;
-      color: var(--muted);
-      font-weight: 600;
-      user-select: none;
-    }
-    .cite-card {
-      background: #0f172a;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 10px;
-      margin-top: 8px;
-    }
-    .cite-meta {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-bottom: 5px;
-      font-size: 0.75rem;
-      color: var(--muted);
-    }
-    .cite-text {
-      font-size: 0.78rem;
-      color: #cbd5e1;
-      line-height: 1.4;
-    }
-    /* Feedback buttons */
-    .fb-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-top: 10px;
-      padding-top: 8px;
-      border-top: 1px solid var(--border);
-      flex-wrap: wrap;
-    }
-    .fb-btn {
-      background: #0f172a;
-      color: var(--muted);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 0.76rem;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .fb-btn.up-done {
-      border-color: #22c55e;
-      color: #4ade80;
-      background: rgba(34, 197, 94, 0.12);
-    }
-    .fb-btn.down-done {
-      border-color: #f59e0b;
-      color: #fbbf24;
-      background: rgba(245, 158, 11, 0.12);
-    }
-    /* Footer Input */
-    footer {
-      background: var(--panel);
-      border-top: 1px solid var(--border);
-      padding: 10px 12px;
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-shrink: 0;
-    }
-    #q-input {
-      flex: 1;
-      background: #0f172a;
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 22px;
-      padding: 11px 15px;
-      font-size: 0.98rem;
-      outline: none;
-    }
-    #q-input:focus { border-color: var(--accent); }
-    #send-btn {
-      background: var(--accent);
-      color: #0f172a;
-      border: none;
-      border-radius: 50%;
-      width: 42px;
-      height: 42px;
-      font-weight: 800;
-      font-size: 1.05rem;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    #send-btn:disabled { opacity: 0.4; cursor: default; }
-    /* Login Modal */
-    #auth-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(15, 23, 42, 0.96);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      z-index: 100;
-    }
-    .auth-box {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 24px;
-      width: 100%;
-      max-width: 340px;
-      text-align: center;
-    }
-    .auth-box h2 { margin-bottom: 8px; font-size: 1.2rem; }
-    .auth-box p { color: var(--muted); font-size: 0.85rem; margin-bottom: 16px; }
-    .auth-box input {
-      width: 100%;
-      padding: 12px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: #0f172a;
-      color: var(--text);
-      font-size: 1.2rem;
-      text-align: center;
-      letter-spacing: 4px;
-      margin-bottom: 12px;
-    }
-    .auth-box button {
-      width: 100%;
-      padding: 12px;
-      border-radius: 10px;
-      border: none;
-      background: var(--accent);
-      color: #0f172a;
-      font-weight: 700;
-      font-size: 0.95rem;
-      cursor: pointer;
-    }
-    #auth-err { color: #f87171; font-size: 0.82rem; margin-top: 8px; }
-  </style>
-</head>
-<body>
-  <header>
-    <div>
-      <div class="brand">🛠️ Nukumi <span class="brand-sub" id="manual-count-lbl">Field Support</span></div>
-    </div>
-    <div class="controls">
-      <button class="pill-btn" id="lock-btn" onclick="promptModelLock()">🔓 All Manuals</button>
-      <button class="pill-btn" onclick="resetSession()" title="Clear history for new unit">🔄 New Unit</button>
-    </div>
-  </header>
-
-  <main id="chat">
-    <div class="msg bot">
-      <p><strong>Field Support Assistant Ready.</strong></p>
-      <p>Ask a troubleshooting or wiring question, or tap <strong>🔓 All Manuals</strong> above to lock onto a specific controller (e.g., <code>CIPer 30</code>, <code>KitControl</code>, <code>IRM</code>, <code>WEB-8000</code>).</p>
-    </div>
-  </main>
-
-  <footer>
-    <input id="q-input" type="text" placeholder="Ask a field question or part #..." autocomplete="off" />
-    <button id="send-btn" onclick="sendMessage()">➤</button>
-  </footer>
-
-  <div id="auth-overlay">
-    <div class="auth-box">
-      <h2>🔒 Field Access PIN</h2>
-      <p>Enter your technician access code to unlock Nukumi.</p>
-      <input id="pin-input" type="password" inputmode="numeric" placeholder="••••••" />
-      <button onclick="submitPin()">Unlock</button>
-      <div id="auth-err"></div>
-    </div>
-  </div>
-
-  <script>
-    const chatEl = document.getElementById('chat');
-    const inputEl = document.getElementById('q-input');
-    const sendBtn = document.getElementById('send-btn');
-    const lockBtn = document.getElementById('lock-btn');
-    const authOverlay = document.getElementById('auth-overlay');
-    const pinInput = document.getElementById('pin-input');
-    const authErr = document.getElementById('auth-err');
-    let currentLock = null;
-
-    inputEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !sendBtn.disabled) sendMessage();
-    });
-    pinInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') submitPin();
-    });
-
-    function escapeHtml(str) {
-      return str.replace(/[&<>"']/g, (c) => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-      }[c]));
-    }
-
-    function renderMarkdown(raw) {
-      let text = escapeHtml(raw);
-      // Linkify 📄 Source: <filename.pdf> (Page <X>)
-      text = text.replace(
-        /📄\s*Source:\s*([^\n(]+\.pdf)\s*\(Page\s*(\d+)\)/gi,
-        (_, file, page) => {
-          const cleanFile = file.trim();
-          const url = '/pdf/' + encodeURIComponent(cleanFile) + '#page=' + page;
-          return `<a class="pdf-link" href="${url}" target="_blank">📄 ${cleanFile} (Page ${page}) ↗</a>`;
-        }
-      );
-      // Style 🧮 or 📄 Source: Standard Engineering Formula badge
-      text = text.replace(
-        /(?:🧮|📄)\s*Source:\s*(Standard Engineering Formula[^\n]*)/gi,
-        (_, label) => `<span class="pdf-link" style="color:#fcd34d;border-color:rgba(252,211,77,0.4);background:rgba(252,211,77,0.12);">🧮 Source: ${label.trim()}</span>`
-      );
-      // Clean any raw LaTeX math tokens if emitted by the LLM
-      text = text.replace(/\\mathbf\{([^}]*)\}/g, '**$1**');
-      text = text.replace(/\\text\{([^}]*)\}/g, '$1');
-      text = text.replace(/\\approx/g, '≈').replace(/\\times/g, '×').replace(/\\div/g, '÷');
-      text = text.replace(/\$([^$\n]+)\$/g, '$1');
-      text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-      const lines = text.split('\n');
-      let html = '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (trimmed.startsWith('⚠️')) {
-          html += `<div class="warn-box">${trimmed}</div>`;
-        } else {
-          html += `<p>${trimmed}</p>`;
-        }
-      }
-      return html || '<p>...</p>';
-    }
-
-    function renderCitationsDrawer(hits) {
-      if (!hits || !hits.length) return '';
-      let cards = '';
-      hits.forEach((h, i) => {
-        const url = '/pdf/' + encodeURIComponent(h.file_name) + '#page=' + h.page;
-        cards += `
-          <div class="cite-card">
-            <div class="cite-meta">
-              <a class="pdf-link" style="margin:0;padding:2px 7px;" href="${url}" target="_blank">
-                [${i + 1}] 📄 ${escapeHtml(h.file_name)} (p.${h.page}) ↗
-              </a>
-              <div>
-                <span>Hybrid: ${h.hybrid_score.toFixed(2)} | Sem: ${h.semantic_score.toFixed(2)} | BM25: ${h.bm25_score.toFixed(1)}</span>
-                <button class="fb-btn" style="margin-left:6px;padding:2px 7px;" onclick="sendFeedback('up', ${i}, this)">🎯 Best Match</button>
-              </div>
-            </div>
-            <div class="cite-text">${escapeHtml(h.paragraph)}</div>
-          </div>`;
-      });
-      return `
-        <div class="fb-row">
-          <button class="fb-btn" onclick="sendFeedback('up', 0, this)">👍 Helpful</button>
-          <button class="fb-btn" onclick="sendFeedback('down', 0, this)">👎 Needs Work</button>
-        </div>
-        <details class="citations">
-          <summary>📚 View ${hits.length} Verbatim Manual Excerpts & Scores</summary>
-          ${cards}
-        </details>`;
-    }
-
-    async function sendFeedback(rating, excerptIdx, btnEl) {
-      let note = '';
-      if (rating === 'down') {
-        const inputNote = prompt('Optional note: What was missing or which controller/manual should this have used?');
-        if (inputNote === null) return;
-        note = inputNote.trim();
-      }
-      const res = await fetch('/api/feedback', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({rating: rating, excerpt_index: excerptIdx, note: note})
-      });
-      if (res.ok && btnEl) {
-        if (rating === 'up') {
-          btnEl.classList.add('up-done');
-          btnEl.textContent = '👍 Saved for Training';
-        } else {
-          btnEl.classList.add('down-done');
-          btnEl.textContent = '👎 Logged for Review';
-        }
-      }
-    }
-
-    function updateLockUI(device) {
-      currentLock = device;
-      if (device) {
-        lockBtn.classList.add('active');
-        lockBtn.textContent = `🔒 ${device} ×`;
-      } else {
-        lockBtn.classList.remove('active');
-        lockBtn.textContent = '🔓 All Manuals';
-      }
-    }
-
-    async function checkStatus() {
-      const res = await fetch('/api/status');
-      if (res.status === 401) {
-        authOverlay.style.display = 'flex';
-        pinInput.focus();
-        return;
-      }
-      const data = await res.json();
-      authOverlay.style.display = 'none';
-      if (data.app_name) {
-        document.title = `${data.app_name} Field Support`;
-      }
-      document.getElementById('manual-count-lbl').textContent = `(${data.manual_count} manuals)`;
-      updateLockUI(data.active_device);
-    }
-
-    async function submitPin() {
-      authErr.textContent = '';
-      const res = await fetch('/api/login', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({pin: pinInput.value.trim()})
-      });
-      if (res.ok) {
-        pinInput.value = '';
-        await checkStatus();
-      } else {
-        const err = await res.json().catch(() => ({}));
-        authErr.textContent = err.error || 'Invalid PIN';
-      }
-    }
-
-    async function promptModelLock() {
-      if (currentLock) {
-        // Clear existing lock on tap
-        await sendCommand('unlock');
-        return;
-      }
-      const model = prompt('Enter controller or manual name to lock onto (e.g. CIPer 30, KitControl, IRM, WEB-8000):');
-      if (model && model.trim()) {
-        await sendCommand('lock ' + model.trim());
-      }
-    }
-
-    async function resetSession() {
-      await sendCommand('reset');
-      chatEl.innerHTML = `<div class="msg bot"><p>🔄 <strong>Session cleared.</strong> Ready for a new unit.</p></div>`;
-    }
-
-    async function sendCommand(cmdText) {
-      const res = await fetch('/api/command', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({command: cmdText})
-      });
-      if (res.status === 401) {
-        authOverlay.style.display = 'flex';
-        return;
-      }
-      const data = await res.json();
-      updateLockUI(data.active_device);
-    }
-
-    async function sendMessage() {
-      const text = inputEl.value.trim();
-      if (!text) return;
-      inputEl.value = '';
-      sendBtn.disabled = true;
-
-      const userDiv = document.createElement('div');
-      userDiv.className = 'msg user';
-      userDiv.textContent = text;
-      chatEl.appendChild(userDiv);
-
-      const botDiv = document.createElement('div');
-      botDiv.className = 'msg bot';
-      const contentDiv = document.createElement('div');
-      contentDiv.innerHTML = '<p><em>Searching manuals...</em></p>';
-      const citeContainer = document.createElement('div');
-      botDiv.appendChild(contentDiv);
-      botDiv.appendChild(citeContainer);
-      chatEl.appendChild(botDiv);
-      chatEl.scrollTop = chatEl.scrollHeight;
-
-      try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({message: text})
-        });
-        if (res.status === 401) {
-          authOverlay.style.display = 'flex';
-          sendBtn.disabled = false;
-          return;
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let fullText = '';
-
-        while (true) {
-          const {value, done} = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, {stream: true});
-          const parts = buffer.split('\n\n');
-          buffer = parts.pop();
-
-          for (const part of parts) {
-            if (!part.startsWith('data: ')) continue;
-            const payload = JSON.parse(part.slice(6));
-            if (payload.type === 'meta') {
-              updateLockUI(payload.active_device);
-              citeContainer.innerHTML = renderCitationsDrawer(payload.citations);
-            } else if (payload.type === 'token') {
-              fullText += payload.text;
-              contentDiv.innerHTML = renderMarkdown(fullText);
-              chatEl.scrollTop = chatEl.scrollHeight;
-            } else if (payload.type === 'error') {
-              contentDiv.innerHTML = `<p style="color:#f87171;">${escapeHtml(payload.text)}</p>`;
-            }
-          }
-        }
-      } catch (err) {
-        contentDiv.innerHTML = `<p style="color:#f87171;">Connection error: ${escapeHtml(String(err))}</p>`;
-      } finally {
-        sendBtn.disabled = false;
-        chatEl.scrollTop = chatEl.scrollHeight;
-      }
-    }
-
-    checkStatus();
-  </script>
-</body>
-</html>
-"""
 
 
 class FieldSupportHTTPServer(ThreadingHTTPServer):
@@ -753,7 +205,6 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, format, *args):
-        # Clean, single-line request log without leaking tokens
         print(f"[{self.log_date_time_string()}] {self.client_address[0]} {format % args}")
 
     def _get_client_ip(self) -> str:
@@ -783,6 +234,15 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
             return sid_morsel.value, False
         return secrets.token_hex(16), True
 
+    def _get_preferred_theme(self, query_params: dict[str, list[str]], session: dict) -> str:
+        if "theme" in query_params and query_params["theme"]:
+            return query_params["theme"][0].strip()
+        cookies = self._get_cookies()
+        theme_morsel = cookies.get("nukumi_theme")
+        if theme_morsel and theme_morsel.value:
+            return urllib.parse.unquote(theme_morsel.value)
+        return session.get("theme", DEFAULT_THEME)
+
     def _send_json(self, status: int, data: dict, extra_headers: list[tuple[str, str]] | None = None):
         body = json.dumps(data).encode("utf-8")
         self.send_response(status)
@@ -805,18 +265,44 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        query_params = urllib.parse.parse_qs(parsed.query)
 
         if path == "/":
-            body = MOBILE_HTML.encode("utf-8")
             sid, is_new = self._get_or_create_session_id()
+            session = get_session(sid)
+            preferred_theme = self._get_preferred_theme(query_params, session)
+            active_theme, body = resolve_theme_html(preferred_theme)
+            session["theme"] = active_theme
+
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache")
             if is_new:
                 self.send_header(
                     "Set-Cookie",
                     f"nukumi_sid={sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800",
                 )
+            if "theme" in query_params:
+                self.send_header(
+                    "Set-Cookie",
+                    f"nukumi_theme={active_theme}; Path=/; SameSite=Strict; Max-Age=31536000",
+                )
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/app.js":
+            js_path = os.path.join(themes_dir, "app.js")
+            if not os.path.isfile(js_path):
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "app.js not found"})
+                return
+            with open(js_path, "rb") as f:
+                body = f.read()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(body)
             return
@@ -852,6 +338,11 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
                     f"nukumi_sid={sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800",
                 ))
             cfg = load_domain_config()
+            available_themes = list_available_themes()
+            preferred = self._get_preferred_theme(query_params, session)
+            valid_ids = {t["id"] for t in available_themes}
+            active_theme = preferred if preferred in valid_ids else (available_themes[0]["id"] if available_themes else DEFAULT_THEME)
+
             self._send_json(
                 HTTPStatus.OK,
                 {
@@ -859,6 +350,8 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
                     "app_name": cfg.get("app_name", "Nukumi"),
                     "manual_count": self.server.manual_count,
                     "active_device": session["active_device"],
+                    "active_theme": active_theme,
+                    "themes": available_themes,
                 },
                 extra_headers=headers,
             )
@@ -883,7 +376,7 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def _serve_pdf_file(self, full_pdf_path: str):
-        """Serve PDF manual with HTTP Range support so mobile browsers can jump directly to #page=X."""
+        """Serve PDF manual with HTTP Range support so mobile/tablet browsers can jump directly to #page=X."""
         file_size = os.path.getsize(full_pdf_path)
         range_header = self.headers.get("Range")
 
@@ -1032,7 +525,6 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         cmd = user_input.lower()
-        # Handle inline text commands ('unlock', 'lock <model>', 'reset') inside the chat box too
         if cmd in {"unlock", "unpin"}:
             session["active_device"] = None
             self._send_sse({"type": "meta", "active_device": None, "citations": []})
@@ -1146,7 +638,6 @@ def main():
     paragraphs = list(corpus_dataset["paragraph"])
     file_names = list(corpus_dataset["file_name"])
     pages = list(corpus_dataset["page"])
-    manual_count = get_manual_count(file_names)
 
     paragraph_embeddings = load_or_compute_embeddings(retriever, paragraphs)
     if retriever.device.type == "cpu":
@@ -1159,6 +650,7 @@ def main():
     print(f"Building BM25 lexical index over {len(paragraphs)} paragraphs ({manual_count} manuals)...")
     bm25_index = BM25Index(paragraphs, file_names=file_names)
 
+    themes = [t["id"] for t in list_available_themes()]
     server = FieldSupportHTTPServer(
         (HOST, PORT),
         FieldSupportHandler,
@@ -1173,10 +665,11 @@ def main():
     )
 
     print("\n" + "=" * 65)
-    print("🚀 NUKUMI MOBILE PWA SERVER READY")
+    print("🚀 NUKUMI MOBILE & TABLET PWA SERVER READY")
     print("=" * 65)
     print(f"  Local Address : http://{HOST}:{PORT}")
     print(f"  Access PIN    : {access_pin}  (saved in .access_pin — edit anytime)")
+    print(f"  HTML Themes   : {', '.join(themes)}  (from themes/*.html)")
     print("-" * 65)
     print("  To expose privately to your Tailscale devices only:")
     print(f"    tailscale serve {PORT}")

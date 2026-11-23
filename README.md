@@ -8,7 +8,7 @@ A domain-adapted **Hybrid Search (ModernBERT + BM25)** and conversational **RAG 
 
 - **Hybrid Retrieval (ModernBERT + BM25 Reciprocal Rank Fusion)**: Combines dense semantic search (`Alibaba-NLP/gte-modernbert-base`, fine-tuned on your manuals) with a zero-dependency inverted-index `BM25Okapi` lexical search that matches exact part numbers, terminal IDs (`BO-1`, `AV-123`), and manual titles.
 - **Self-Improving Feedback Loop (`👍 / 👎 / 🎯 Best Match`)**: Technicians can rate answers or mark specific manual excerpts as the `🎯 Best Match` directly on their phone; `train_st.py` automatically folds `👍` pairs from `feedback_log.csv` into the next training run at 2× weight.
-- **Mobile PWA with Clickable PDF Page Citations**: Zero-dependency Python HTTP server (`127.0.0.1:8000`) with a dark-mode mobile UI, 6-digit PIN gate (`.access_pin`), model lock pill (`🔒`), collapsible verbatim citations drawer, and clickable `📄 Source: Manual.pdf (Page X)` links that open the PDF right to Page `X`.
+- **Mobile & Tablet PWA with Hot-Swappable HTML Themes (`themes/*.html`)**: Zero-dependency Python HTTP server (`127.0.0.1:8000`) with a slide-out Hamburger Menu (`☰`), 6-digit PIN gate (`.access_pin`), model lock pill (`🔒`), collapsible verbatim citations drawer, and clickable `📄 Source: Manual.pdf (Page X)` links that open the PDF right to Page `X`. Includes 3 built-in field themes (**Slate Dark**, **Daylight Rooftop** for direct sunlight, and **Amber Industrial** for dark mechanical rooms) and auto-discovers any custom `.html` file dropped into `themes/`.
 - **Multi-Turn Field Context**: Automatically carries equipment context across follow-up questions (*"How do I factory reset it?"*) and enforces explicit device attribution so model-specific procedures are never mistaken for universal rules.
 - **Universal Engineering Math & Physics Formulas**: Keeps proprietary equipment specs (terminals, BACnet IDs, DIP switches) strictly locked to your PDF manuals while seamlessly solving field calculations (Ohm's/Watt's Law, electric heater BTU/hr output, airflow/hydronic heat transfer, gas laws, 4–20mA / 0–10VDC signal scaling) with step-by-step formulas and a distinct `🧮 Source: Standard Engineering Formula (Not from PDF Manual)` badge.
 - **Subfolder Organization & Instant `ignore_` / `exclude_` Filtering**: Organize `pdfFiles/` into any subfolder hierarchy. Prefixing any subfolder or PDF filename with `ignore_` or `exclude_` (e.g., `pdfFiles/ignore_Legacy_AX/`) masks those manuals out of live search and query generation immediately on startup—without even needing to rebuild your vector cache (`corpus_embeddings.pt`).
@@ -92,6 +92,19 @@ tailscale funnel 8000
 ```
 Open the `https://<machine>.<tailnet>.ts.net` URL on your phone, enter the 6-digit PIN from `.access_pin` (editable anytime), and tap **"Add to Home Screen"**.
 
+#### Optional: Run as an Auto-Restarting Background Service (Linux `systemd`)
+If you are testing or experimenting, simply run `python src/web_app.py` in a terminal as shown above. When you are ready for unattended field use (auto-restart on crash and auto-start on boot), run the optional service installer:
+```bash
+# Install and start the user-level systemd background service
+./install_service.sh
+
+# Useful service commands:
+systemctl --user status nukumi      # Check status
+journalctl --user -u nukumi -f      # View live logs & Access PIN
+systemctl --user stop nukumi        # Stop service (e.g., before running train_st.py)
+./install_service.sh --uninstall    # Remove background service and return to manual mode
+```
+
 ### Option B: Terminal CLI Conversational Assistant
 ```bash
 python src/assistant.py
@@ -133,7 +146,9 @@ As technicians use the Mobile PWA or CLI in the field:
 | `src/train_st.py` | Fine-tunes `Alibaba-NLP/gte-modernbert-base` on `synthetic_queries.csv` + `feedback_log.csv` |
 | `src/test_search.py` | Standalone Hybrid Search CLI (`BM25Index` + ModernBERT RRF + `corpus_embeddings.pt` caching) |
 | `src/assistant.py` | Multi-turn conversational RAG CLI assistant |
-| `src/web_app.py` | Zero-dependency Mobile PWA server with PIN auth, streaming SSE, and `#page=X` PDF viewer |
+| `src/web_app.py` | Zero-dependency Mobile & Tablet PWA server with PIN auth, streaming SSE, `#page=X` PDF viewer, and live theme loader |
+| `themes/*.html` | Hot-swappable self-contained HTML themes (`slate-dark.html`, `daylight-rooftop.html`, `amber-industrial.html`) + shared `themes/app.js` |
+| `install_service.sh` | Optional Linux `systemd --user` background service installer (`--uninstall` to remove) |
 
 ---
 

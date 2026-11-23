@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <title>Nukumi Field Support — Slate Dark</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --panel-alt: #334155;
+      --card-bg: #0f172a;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-dark: #0284c7;
+      --strong-color: #7dd3fc;
+      --code-color: #fcd34d;
+      --warn-bg: #451a03;
+      --warn-border: #f59e0b;
+      --warn-text: #fde68a;
+      --border: #334155;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .menu-btn {
+      background: var(--panel-alt);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 38px;
+      height: 38px;
+      font-size: 1.15rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .brand { font-weight: 700; font-size: 1rem; display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+    .brand-sub { font-size: 0.72rem; color: var(--muted); font-weight: 400; }
+    .controls { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .pill-btn {
+      background: var(--panel-alt);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 7px 11px;
+      min-height: 36px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    #lock-btn {
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: inline-block;
+    }
+    @media (max-width: 480px) {
+      header { padding: 8px 10px; gap: 6px; }
+      .brand-sub { display: none; }
+      .new-unit-text { display: none; }
+      .pill-btn { padding: 6px 10px; font-size: 0.76rem; }
+      #lock-btn { max-width: 135px; }
+    }
+    .pill-btn.active {
+      background: rgba(56, 189, 248, 0.18);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    /* Hamburger Slide-Out Drawer */
+    #drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      display: none;
+      z-index: 40;
+    }
+    #drawer-backdrop.open { display: block; }
+    aside#drawer {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      width: 290px;
+      max-width: 84vw;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      padding: 18px 16px;
+      transform: translateX(-100%);
+      transition: transform 0.2s ease;
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+    }
+    aside#drawer.open { transform: translateX(0); }
+    .drawer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+    }
+    .drawer-section { display: flex; flex-direction: column; gap: 6px; }
+    .drawer-section label { font-size: 0.78rem; color: var(--muted); font-weight: 600; text-transform: uppercase; }
+    .drawer-select, .drawer-action {
+      width: 100%;
+      padding: 10px 12px;
+      min-height: 44px;
+      border-radius: 10px;
+      background: var(--card-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      font-size: 0.92rem;
+      font-weight: 600;
+      text-align: left;
+      cursor: pointer;
+    }
+    .drawer-help {
+      font-size: 0.8rem;
+      color: var(--muted);
+      line-height: 1.5;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    /* Main Chat Area (Phone + Tablet Responsive) */
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      scroll-behavior: smooth;
+      width: 100%;
+      max-width: 920px;
+      margin: 0 auto;
+    }
+    .msg {
+      max-width: 92%;
+      padding: 12px 15px;
+      border-radius: 14px;
+      font-size: 0.96rem;
+      line-height: 1.5;
+      word-wrap: break-word;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: var(--accent-dark);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .msg.bot {
+      align-self: flex-start;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 4px;
+      width: 100%;
+    }
+    .msg.bot p { margin-bottom: 8px; }
+    .msg.bot p:last-child { margin-bottom: 0; }
+    .msg.bot strong { color: var(--strong-color); font-weight: 700; }
+    .msg.bot code {
+      background: var(--card-bg);
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-family: ui-monospace, monospace;
+      font-size: 0.88em;
+      color: var(--code-color);
+    }
+    .warn-box {
+      background: var(--warn-bg);
+      border-left: 4px solid var(--warn-border);
+      padding: 8px 11px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      font-weight: 600;
+      color: var(--warn-text);
+    }
+    .pdf-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 6px;
+      padding: 6px 11px;
+      background: rgba(56, 189, 248, 0.14);
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      border-radius: 8px;
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.83rem;
+      font-weight: 600;
+    }
+    .formula-badge {
+      color: #fcd34d;
+      border-color: rgba(252, 211, 77, 0.4);
+      background: rgba(252, 211, 77, 0.12);
+    }
+    details.citations {
+      margin-top: 10px;
+      border-top: 1px solid var(--border);
+      padding-top: 8px;
+      font-size: 0.82rem;
+    }
+    details.citations summary { cursor: pointer; color: var(--muted); font-weight: 600; user-select: none; padding: 4px 0; }
+    .cite-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 11px;
+      margin-top: 8px;
+    }
+    .cite-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 6px;
+      font-size: 0.76rem;
+      color: var(--muted);
+    }
+    .cite-text { font-size: 0.8rem; color: var(--text); opacity: 0.9; line-height: 1.42; }
+    .fb-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .fb-btn {
+      background: var(--card-bg);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 11px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .fb-btn.up-done { border-color: #22c55e; color: #4ade80; background: rgba(34, 197, 94, 0.12); }
+    .fb-btn.down-done { border-color: #f59e0b; color: #fbbf24; background: rgba(245, 158, 11, 0.12); }
+    footer {
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      padding: 10px 14px;
+      flex-shrink: 0;
+    }
+    .footer-inner {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      max-width: 920px;
+      margin: 0 auto;
+    }
+    #q-input {
+      flex: 1;
+      background: var(--card-bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 11px 16px;
+      font-size: 1rem; /* >=16px prevents iOS auto-zoom while allowing tablet pinch-to-zoom */
+      outline: none;
+    }
+    #q-input:focus { border-color: var(--accent); }
+    #send-btn {
+      background: var(--accent);
+      color: #0f172a;
+      border: none;
+      border-radius: 50%;
+      width: 44px;
+      height: 44px;
+      font-weight: 800;
+      font-size: 1.05rem;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    #send-btn:disabled { opacity: 0.4; cursor: default; }
+    /* Tablet & Wide Screen Enhancements */
+    @media (min-width: 768px) {
+      header { padding: 12px 24px; }
+      #chat { padding: 20px 24px; gap: 16px; }
+      .msg { font-size: 1rem; padding: 14px 18px; }
+      .msg.user { max-width: 72%; }
+    }
+    #auth-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.96);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 100;
+    }
+    .auth-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      width: 100%;
+      max-width: 340px;
+      text-align: center;
+    }
+    .auth-box h2 { margin-bottom: 8px; font-size: 1.2rem; }
+    .auth-box p { color: var(--muted); font-size: 0.85rem; margin-bottom: 16px; }
+    .auth-box input {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--card-bg);
+      color: var(--text);
+      font-size: 1.2rem;
+      text-align: center;
+      letter-spacing: 4px;
+      margin-bottom: 12px;
+    }
+    .auth-box button {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: none;
+      background: var(--accent);
+      color: #0f172a;
+      font-weight: 700;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    #auth-err { color: #f87171; font-size: 0.82rem; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <button class="menu-btn" onclick="toggleDrawer()" aria-label="Open menu">☰</button>
+      <div class="brand">🛠️ <span id="brand-name">Nukumi</span> <span class="brand-sub" id="manual-count-lbl">Field Support</span></div>
+    </div>
+    <div class="controls">
+      <button class="pill-btn" id="lock-btn" onclick="promptModelLock()">🔓 All Manuals</button>
+      <button class="pill-btn" onclick="resetSession()" title="Clear history for new unit">🔄<span class="new-unit-text"> New Unit</span></button>
+    </div>
+  </header>
+
+  <div id="drawer-backdrop" onclick="toggleDrawer(false)"></div>
+  <aside id="drawer" aria-label="Field Settings Menu">
+    <div class="drawer-header">
+      <strong>⚙️ Field Controls &amp; Theme</strong>
+      <button class="menu-btn" style="width:32px;height:32px;font-size:1rem;" onclick="toggleDrawer(false)">✕</button>
+    </div>
+    <div class="drawer-section">
+      <label for="theme-select">🎨 Appearance / Theme</label>
+      <select id="theme-select" class="drawer-select" onchange="changeTheme(this.value)"></select>
+    </div>
+    <div class="drawer-section">
+      <label>🛠️ Equipment Context</label>
+      <button id="drawer-lock-btn" class="drawer-action" onclick="promptModelLock()">🔒 Lock Controller Model...</button>
+      <button class="drawer-action" onclick="resetSession()">🔄 New Unit (Clear History)</button>
+    </div>
+    <div class="drawer-section">
+      <label>📖 Quick Tips</label>
+      <div class="drawer-help">
+        • Tap <strong>🔓 All Manuals</strong> to lock onto a specific controller (e.g. <code>CIPer 30</code>, <code>KitControl</code>, <code>IRM</code>).<br/>
+        • Tap any <strong>📄 Source</strong> link to open the full PDF manual to that exact page.<br/>
+        • Tap <strong>👍 Helpful</strong> or <strong>🎯 Best Match</strong> to save real field pairs for your next model training run.
+      </div>
+    </div>
+  </aside>
+
+  <main id="chat" role="log" aria-live="polite">
+    <article class="msg bot">
+      <p><strong>Field Support Assistant Ready.</strong></p>
+      <p>Ask a troubleshooting, wiring, or field math question—or tap <strong>☰</strong> to switch themes (including <em>Daylight Rooftop</em> for bright sun).</p>
+    </article>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <input id="q-input" type="text" placeholder="Ask a field question, calculation, or part #..." autocomplete="off" />
+      <button id="send-btn" onclick="sendMessage()" aria-label="Send">➤</button>
+    </div>
+  </footer>
+
+  <div id="auth-overlay">
+    <div class="auth-box">
+      <h2>🔒 Field Access PIN</h2>
+      <p>Enter your technician access code to unlock.</p>
+      <input id="pin-input" type="password" inputmode="numeric" placeholder="••••••" />
+      <button onclick="submitPin()">Unlock</button>
+      <div id="auth-err"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
