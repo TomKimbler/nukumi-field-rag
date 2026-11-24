@@ -21,7 +21,7 @@ import threading
 import time
 import urllib.parse
 from http import HTTPStatus
-from http.cookies import SimpleCookie
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import ollama
@@ -38,7 +38,7 @@ from assistant import (
     retrieve_context_hits,
 )
 from generate_queries import load_domain_config
-from optiDataset import find_active_pdf_path, is_excluded_name
+from optiDataset import find_active_pdf_path, is_excluded_name, iter_active_pdf_files
 from test_search import (
     BM25Index,
     filter_active_corpus,
@@ -51,6 +51,7 @@ from test_search import (
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 pin_file_path = os.path.join(project_root, ".access_pin")
+secret_file_path = os.path.join(project_root, ".session_secret")
 themes_dir = os.path.join(project_root, "themes")
 DEFAULT_THEME = "slate-dark"
 
@@ -60,13 +61,34 @@ PORT = int(os.environ.get("PORT", "8000"))
 # Per-session state store (keyed by session_id cookie)
 SESSION_LOCK = threading.Lock()
 SESSIONS: dict[str, dict] = {}
+SESSION_TTL_SECONDS = 86400.0  # Prune idle sessions after 24 hours
+MAX_SAVED_TURNS = 25
 
 # Brute-force rate limiting store (keyed by client IP / X-Forwarded-For)
 AUTH_FAILURES: dict[str, list[float]] = {}
 MAX_FAILURES = 5
 LOCKOUT_SECONDS = 60.0
 
-SERVER_SECRET = secrets.token_bytes(32)
+
+def load_or_create_session_secret() -> bytes:
+    """Persist the HMAC signing secret in .session_secret so logins survive server restarts."""
+    if os.path.exists(secret_file_path):
+        try:
+            with open(secret_file_path, "r", encoding="utf-8") as f:
+                hex_key = f.read().strip()
+                if len(hex_key) >= 64:
+                    return bytes.fromhex(hex_key)
+        except Exception:
+            pass
+
+    new_secret = secrets.token_bytes(32)
+    with open(secret_file_path, "w", encoding="utf-8") as f:
+        f.write(new_secret.hex() + "\n")
+    os.chmod(secret_file_path, 0o600)
+    return new_secret
+
+
+SERVER_SECRET = load_or_create_session_secret()
 
 
 def list_available_themes() -> list[dict[str, str]]:
@@ -134,18 +156,25 @@ def make_auth_token(pin: str) -> str:
 
 
 def get_session(session_id: str) -> dict:
+    now = time.time()
     with SESSION_LOCK:
+        # Prune stale sessions to prevent unbounded memory growth on long-running services
+        expired = [sid for sid, s in SESSIONS.items() if now - s.get("updated_at", now) > SESSION_TTL_SECONDS]
+        for sid in expired:
+            SESSIONS.pop(sid, None)
+
         if session_id not in SESSIONS:
             SESSIONS[session_id] = {
                 "chat_history": [],
                 "last_user_queries": [],
                 "last_search_query": "",
                 "last_hits": [],
+                "turns": {},
                 "active_device": None,
                 "theme": DEFAULT_THEME,
-                "updated_at": time.time(),
+                "updated_at": now,
             }
-        SESSIONS[session_id]["updated_at"] = time.time()
+        SESSIONS[session_id]["updated_at"] = now
         return SESSIONS[session_id]
 
 
@@ -199,6 +228,8 @@ class FieldSupportHTTPServer(ThreadingHTTPServer):
         self.manual_count = manual_count
         self.access_pin = access_pin
         self.expected_token = make_auth_token(access_pin)
+        # Cache active PDF paths at startup so HTTP Range requests don't re-walk pdfFiles/
+        self.active_pdf_map = {fname: fpath for fname, fpath in iter_active_pdf_files(pdf_dir)}
 
 
 class FieldSupportHandler(BaseHTTPRequestHandler):
@@ -217,7 +248,10 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
         cookie = SimpleCookie()
         raw = self.headers.get("Cookie")
         if raw:
-            cookie.load(raw)
+            try:
+                cookie.load(raw)
+            except CookieError:
+                pass
         return cookie
 
     def _is_authenticated(self) -> bool:
@@ -256,11 +290,18 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_json_body(self) -> dict:
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return {}
         if length <= 0 or length > 65536:
             return {}
         raw = self.rfile.read(length)
-        return json.loads(raw.decode("utf-8"))
+        try:
+            data = json.loads(raw.decode("utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (ValueError, UnicodeDecodeError):
+            return {}
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -366,7 +407,11 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
             if not safe_name.lower().endswith(".pdf") or safe_name != raw_name:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid PDF filename"})
                 return
-            full_pdf_path = find_active_pdf_path(pdf_dir, safe_name)
+            full_pdf_path = self.server.active_pdf_map.get(safe_name)
+            if not full_pdf_path or not os.path.isfile(full_pdf_path):
+                full_pdf_path = find_active_pdf_path(pdf_dir, safe_name)
+                if full_pdf_path:
+                    self.server.active_pdf_map[safe_name] = full_pdf_path
             if not full_pdf_path or not os.path.isfile(full_pdf_path):
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "PDF manual not found or excluded"})
                 return
@@ -461,6 +506,7 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
                 session["chat_history"].clear()
                 session["last_user_queries"].clear()
                 session["last_hits"].clear()
+                session["turns"].clear()
                 session["active_device"] = None
             elif cmd_lower in {"unlock", "unpin"}:
                 session["active_device"] = None
@@ -486,22 +532,37 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
             if rating not in {"up", "down"}:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid rating"})
                 return
-            hits = session.get("last_hits") or []
-            queries = session.get("last_user_queries") or []
-            if not hits or not queries:
-                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "No recent query to rate"})
-                return
 
-            idx = int(body.get("excerpt_index", 0))
+            turn_id = str(body.get("turn_id", "")).strip()
+            turn = session.get("turns", {}).get(turn_id) if turn_id else None
+            if turn:
+                hits = turn["hits"]
+                user_query = turn["user_query"]
+                search_query = turn["search_query"]
+                active_device = turn["active_device"]
+            else:
+                hits = session.get("last_hits") or []
+                queries = session.get("last_user_queries") or []
+                if not hits or not queries:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "No recent query to rate"})
+                    return
+                user_query = queries[-1]
+                search_query = session.get("last_search_query") or user_query
+                active_device = session.get("active_device")
+
+            try:
+                idx = int(body.get("excerpt_index", 0))
+            except (ValueError, TypeError):
+                idx = 0
             if idx < 0 or idx >= len(hits):
                 idx = 0
             cid = hits[idx]["corpus_id"]
             note = str(body.get("note", "")).strip()
             log_feedback(
                 rating=rating,
-                user_query=queries[-1],
-                search_query=session.get("last_search_query") or queries[-1],
-                active_device=session.get("active_device"),
+                user_query=user_query,
+                search_query=search_query,
+                active_device=active_device,
                 file_name=self.server.file_names[cid],
                 page=self.server.pages[cid],
                 paragraph=self.server.paragraphs[cid],
@@ -562,6 +623,16 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
             top_k=4,
         )
         session["last_hits"] = hits
+        turn_id = secrets.token_hex(6)
+        turns = session["turns"]
+        turns[turn_id] = {
+            "user_query": user_input,
+            "search_query": search_query,
+            "active_device": session["active_device"],
+            "hits": hits,
+        }
+        while len(turns) > MAX_SAVED_TURNS:
+            turns.pop(next(iter(turns)))
 
         citations_payload = [
             {
@@ -576,6 +647,7 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
         ]
         self._send_sse({
             "type": "meta",
+            "turn_id": turn_id,
             "active_device": session["active_device"],
             "citations": citations_payload,
         })

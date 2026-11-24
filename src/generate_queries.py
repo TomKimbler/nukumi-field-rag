@@ -16,9 +16,27 @@ pdf_dir = os.path.join(project_root, "pdfFiles")
 corpus_path = os.path.join(project_root, "search_corpus_dataset")
 output_csv_path = os.path.join(project_root, "synthetic_queries.csv")
 config_path = os.path.join(project_root, "config.json")
+modelfile_path = os.path.join(project_root, "Modelfile")
 
-# The specific ollama model you have running (e.g., "gemma4:e2b", "llama3", "mistral", etc.)
-OLLAMA_MODEL = "gemma4:e2b"
+
+def load_ollama_model_name() -> str:
+    """Read the Ollama model from OLLAMA_MODEL env var or the FROM line in Modelfile."""
+    env_model = os.environ.get("OLLAMA_MODEL", "").strip()
+    if env_model:
+        return env_model
+    if os.path.exists(modelfile_path):
+        try:
+            with open(modelfile_path, "r", encoding="utf-8") as f:
+                match = re.search(r"^FROM\s+(\S+)", f.read(), re.MULTILINE)
+                if match:
+                    return match.group(1).strip()
+        except Exception:
+            pass
+    return "gemma4:e2b"
+
+
+# Automatically uses the FROM model in Modelfile (or OLLAMA_MODEL env var)
+OLLAMA_MODEL = load_ollama_model_name()
 
 
 def load_domain_config() -> dict:

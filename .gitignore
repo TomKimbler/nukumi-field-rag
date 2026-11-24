@@ -1,6 +1,7 @@
 # Local notes & secrets (never commit)
 notes.txt
 .access_pin
+.session_secret
 feedback_log.csv
 
 # Archived / legacy files

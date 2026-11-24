@@ -80,8 +80,9 @@ function renderMarkdown(raw) {
   return html || '<p>...</p>';
 }
 
-function renderCitationsDrawer(hits) {
+function renderCitationsDrawer(hits, turnId) {
   if (!hits || !hits.length) return '';
+  const safeTurnId = escapeHtml(turnId || '');
   let cards = '';
   hits.forEach((h, i) => {
     const url = '/pdf/' + encodeURIComponent(h.file_name) + '#page=' + h.page;
@@ -93,7 +94,7 @@ function renderCitationsDrawer(hits) {
           </a>
           <div class="cite-scores">
             <span>Hybrid: ${h.hybrid_score.toFixed(2)} | Sem: ${h.semantic_score.toFixed(2)} | BM25: ${h.bm25_score.toFixed(1)}</span>
-            <button class="fb-btn" style="margin-left:6px;padding:3px 8px;" onclick="sendFeedback('up', ${i}, this)">🎯 Best Match</button>
+            <button class="fb-btn" style="margin-left:6px;padding:3px 8px;" onclick="sendFeedback('${safeTurnId}', 'up', ${i}, this)">🎯 Best Match</button>
           </div>
         </div>
         <div class="cite-text">${escapeHtml(h.paragraph)}</div>
@@ -101,8 +102,8 @@ function renderCitationsDrawer(hits) {
   });
   return `
     <div class="fb-row">
-      <button class="fb-btn" onclick="sendFeedback('up', 0, this)">👍 Helpful</button>
-      <button class="fb-btn" onclick="sendFeedback('down', 0, this)">👎 Needs Work</button>
+      <button class="fb-btn" onclick="sendFeedback('${safeTurnId}', 'up', 0, this)">👍 Helpful</button>
+      <button class="fb-btn" onclick="sendFeedback('${safeTurnId}', 'down', 0, this)">👎 Needs Work</button>
     </div>
     <details class="citations">
       <summary>📚 View ${hits.length} Verbatim Manual Excerpts &amp; Scores</summary>
@@ -110,7 +111,7 @@ function renderCitationsDrawer(hits) {
     </details>`;
 }
 
-async function sendFeedback(rating, excerptIdx, btnEl) {
+async function sendFeedback(turnId, rating, excerptIdx, btnEl) {
   let note = '';
   if (rating === 'down') {
     const inputNote = prompt('Optional note: What was missing or which controller/manual should this have used?');
@@ -120,7 +121,7 @@ async function sendFeedback(rating, excerptIdx, btnEl) {
   const res = await fetch('/api/feedback', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({rating: rating, excerpt_index: excerptIdx, note: note})
+    body: JSON.stringify({turn_id: turnId, rating: rating, excerpt_index: excerptIdx, note: note})
   });
   if (res.ok && btnEl) {
     if (rating === 'up') {
@@ -277,7 +278,7 @@ async function sendMessage() {
         const payload = JSON.parse(part.slice(6));
         if (payload.type === 'meta') {
           updateLockUI(payload.active_device);
-          citeContainer.innerHTML = renderCitationsDrawer(payload.citations);
+          citeContainer.innerHTML = renderCitationsDrawer(payload.citations, payload.turn_id);
         } else if (payload.type === 'token') {
           fullText += payload.text;
           contentDiv.innerHTML = renderMarkdown(fullText);
