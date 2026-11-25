@@ -84,12 +84,24 @@ python src/web_app.py
 ```
 In a second terminal, expose port `8000` over HTTPS using [Tailscale](https://tailscale.com):
 ```bash
-# Private to devices on your Tailnet:
+# Private to devices on your Tailnet (foreground; closes when you exit the terminal):
 tailscale serve 8000
 
 # Or public HTTPS link for field testers WITHOUT the Tailscale app (protected by your Access PIN):
 tailscale funnel 8000
 ```
+To run Tailscale in the background without leaving a terminal open (persists across reboots via `tailscaled`), add `--bg`:
+```bash
+# Background persistent Serve (Tailnet-only) or Funnel (public HTTPS):
+tailscale serve --bg 8000
+tailscale funnel --bg 8000
+
+# Check status or stop the background Funnel anytime:
+tailscale funnel status
+tailscale funnel --bg off
+```
+*(If Tailscale prompts for elevated privileges, prefix with `sudo` or grant your user operator permissions once via `sudo tailscale set --operator=$USER`.)*
+
 Open the `https://<machine>.<tailnet>.ts.net` URL on your phone, enter the 6-digit PIN from `.access_pin` (editable anytime), and tap **"Add to Home Screen"**.
 
 #### Optional: Run as an Auto-Restarting Background Service (Linux `systemd`)
@@ -104,6 +116,7 @@ journalctl --user -u nukumi -f      # View live logs & Access PIN
 systemctl --user stop nukumi        # Stop service (e.g., before running train_st.py)
 ./install_service.sh --uninstall    # Remove background service and return to manual mode
 ```
+*(External Tailscale exposure is manual by default. To automatically enable background Tailscale Funnel during install, uncomment the `tailscale funnel --bg 8000` line in `install_service.sh`.)*
 
 ### Option B: Terminal CLI Conversational Assistant
 ```bash

@@ -20,6 +20,8 @@ if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" ]]; then
     systemctl --user disable "${SERVICE_NAME}" 2>/dev/null || true
     rm -f "${SERVICE_FILE}"
     systemctl --user daemon-reload
+    # Optional: Uncomment to also stop the background Tailscale Funnel on uninstall
+    # tailscale funnel --bg off 2>/dev/null || true
     echo "✅ ${SERVICE_NAME} uninstalled. You can still run 'python src/web_app.py' manually anytime."
     exit 0
 fi
@@ -51,6 +53,11 @@ EOF
 
 systemctl --user daemon-reload
 systemctl --user enable --now "${SERVICE_NAME}"
+
+# Optional: Uncomment for automatic platform connectivity (persists across reboots without an open terminal).
+# Left commented out by default so external connections remain manual and opt-in.
+# (For private Tailnet-only access instead of public Funnel, use: tailscale serve --bg 8000)
+# tailscale funnel --bg 8000
 
 echo "================================================================="
 echo "✅ Nukumi background service installed and running!"
