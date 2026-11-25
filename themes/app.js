@@ -94,7 +94,7 @@ function renderCitationsDrawer(hits, turnId) {
           </a>
           <div class="cite-scores">
             <span>Hybrid: ${h.hybrid_score.toFixed(2)} | Sem: ${h.semantic_score.toFixed(2)} | BM25: ${h.bm25_score.toFixed(1)}</span>
-            <button class="fb-btn" style="margin-left:6px;padding:3px 8px;" onclick="sendFeedback('${safeTurnId}', 'up', ${i}, this)">🎯 Best Match</button>
+            <button class="fb-btn" style="margin-left:6px;padding:3px 8px;" onclick="sendFeedback('${safeTurnId}', 'up', ${i}, this, true)">🎯 Best Match</button>
           </div>
         </div>
         <div class="cite-text">${escapeHtml(h.paragraph)}</div>
@@ -111,7 +111,7 @@ function renderCitationsDrawer(hits, turnId) {
     </details>`;
 }
 
-async function sendFeedback(turnId, rating, excerptIdx, btnEl) {
+async function sendFeedback(turnId, rating, excerptIdx, btnEl, explicitExcerpt = false) {
   let note = '';
   if (rating === 'down') {
     const inputNote = prompt('Optional note: What was missing or which controller/manual should this have used?');
@@ -121,7 +121,13 @@ async function sendFeedback(turnId, rating, excerptIdx, btnEl) {
   const res = await fetch('/api/feedback', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({turn_id: turnId, rating: rating, excerpt_index: excerptIdx, note: note})
+    body: JSON.stringify({
+      turn_id: turnId,
+      rating: rating,
+      excerpt_index: excerptIdx,
+      explicit_excerpt: explicitExcerpt,
+      note: note
+    })
   });
   if (res.ok && btnEl) {
     if (rating === 'up') {

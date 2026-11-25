@@ -84,10 +84,57 @@ def clean_pdf_text(text: str) -> str:
     return text
 
 
-def split_into_paragraphs(text: str, min_chars: int = 120) -> list[str]:
-    """Split cleaned page text into meaningful technical paragraphs for search indexing."""
+def _chunk_long_block(text: str, max_chars: int = 1600, overlap_chars: int = 250) -> list[str]:
+    """
+    Split an oversized paragraph/page into overlapping word-boundary chunks that stay
+    comfortably within ModernBERT's 512-token window (~1600 chars) so dense tables
+    and bottom-of-page specs are never silently truncated.
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    start = 0
+    text_len = len(text)
+    while start < text_len:
+        end = min(start + max_chars, text_len)
+        if end < text_len:
+            # Prefer breaking on a sentence boundary or space near the window end
+            split_at = text.rfind(". ", start + max_chars // 2, end)
+            if split_at != -1:
+                end = split_at + 1
+            else:
+                space_at = text.rfind(" ", start + max_chars // 2, end)
+                if space_at != -1:
+                    end = space_at
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= text_len:
+            break
+        next_start = max(end - overlap_chars, start + 1)
+        # Align overlap start to a word boundary
+        if next_start < text_len and text[next_start - 1] != " ":
+            next_space = text.find(" ", next_start, end)
+            if next_space != -1:
+                next_start = next_space + 1
+        start = next_start
+    return chunks
+
+
+def split_into_paragraphs(
+    text: str,
+    min_chars: int = 120,
+    max_chars: int = 1600,
+    overlap_chars: int = 250,
+) -> list[str]:
+    """
+    Split cleaned page text into meaningful, token-bounded technical chunks for search indexing.
+    Preserves numeric/wiring/DIP-switch tables (up to 55% digits) and splits oversized pages
+    into overlapping ~1600-char windows to avoid 512-token truncation.
+    """
     paragraphs = re.split(r"\n\s*\n", text)
-    valid_paragraphs = []
+    valid_paragraphs: list[str] = []
 
     for p in paragraphs:
         p = p.strip()
@@ -96,13 +143,15 @@ def split_into_paragraphs(text: str, min_chars: int = 120) -> list[str]:
         # Filter out Tables of Contents (repeating dots like ".....")
         if re.search(r"\.{4,}", p):
             continue
-        # Filter out blocks that are predominantly numbers/tables without prose
+        # Filter out pure numeric dumps while preserving wiring/DIP/BACnet tables
         numbers = sum(c.isdigit() for c in p)
-        if numbers / len(p) > 0.30:
+        if numbers / len(p) > 0.55:
             continue
 
         p = re.sub(r"\s+", " ", p)
-        valid_paragraphs.append(p)
+        for chunk in _chunk_long_block(p, max_chars=max_chars, overlap_chars=overlap_chars):
+            if len(chunk) >= min_chars:
+                valid_paragraphs.append(chunk)
 
     return valid_paragraphs
 

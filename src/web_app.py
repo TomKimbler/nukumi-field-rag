@@ -550,14 +550,33 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
                 search_query = session.get("last_search_query") or user_query
                 active_device = session.get("active_device")
 
+            is_formula = bool(turn.get("is_formula")) if turn else False
+            explicit_excerpt = body.get("explicit_excerpt", False)
             try:
                 idx = int(body.get("excerpt_index", 0))
             except (ValueError, TypeError):
                 idx = 0
             if idx < 0 or idx >= len(hits):
                 idx = 0
-            cid = hits[idx]["corpus_id"]
             note = str(body.get("note", "")).strip()
+
+            # Guard retriever training: a thumbs-up on a pure engineering-formula answer
+            # should not pair a math question with an unrelated manual excerpt.
+            if rating == "up" and is_formula and not explicit_excerpt:
+                log_feedback(
+                    rating="up_formula",
+                    user_query=user_query,
+                    search_query=search_query,
+                    active_device=active_device,
+                    file_name="Standard Engineering Formula",
+                    page="",
+                    paragraph="",
+                    note=note,
+                )
+                self._send_json(HTTPStatus.OK, {"ok": True, "formula_only": True})
+                return
+
+            cid = hits[idx]["corpus_id"]
             log_feedback(
                 rating=rating,
                 user_query=user_query,
@@ -686,6 +705,8 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
 
         full_reply = "".join(reply_parts).strip()
         if full_reply:
+            if turn_id in turns:
+                turns[turn_id]["is_formula"] = "Standard Engineering Formula" in full_reply
             session["chat_history"].append({"role": "user", "content": user_input})
             session["chat_history"].append({"role": "assistant", "content": full_reply})
             session["last_user_queries"].append(user_input)
@@ -744,9 +765,9 @@ def main():
     print(f"  HTML Themes   : {', '.join(themes)}  (from themes/*.html)")
     print("-" * 65)
     print("  To expose privately to your Tailscale devices only:")
-    print(f"    tailscale serve {PORT}")
+    print(f"    tailscale serve {PORT}        (add --bg to run in background)")
     print("  To expose via public HTTPS URL for testers WITHOUT Tailscale app:")
-    print(f"    tailscale funnel {PORT}")
+    print(f"    tailscale funnel {PORT}       (add --bg to run in background)")
     print("=" * 65)
 
     try:

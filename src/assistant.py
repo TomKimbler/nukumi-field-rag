@@ -78,7 +78,7 @@ def log_feedback(
 DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e2b")
 
 FOLLOWUP_PRONOUNS = {
-    "it", "its", "this", "that", "these", "those", "they", "them", "same", "unit", "controller", "device"
+    "it", "its", "this", "that", "these", "those", "they", "them", "same",
 }
 
 
@@ -305,6 +305,7 @@ def main():
     last_user_queries: list[str] = []
     last_search_query: str = ""
     last_hits: list[dict] = []
+    last_reply_is_formula: bool = False
     active_device: str | None = None
 
     while True:
@@ -334,6 +335,18 @@ def main():
         if cmd in {"good", "up", "👍"}:
             if not last_hits or not last_user_queries:
                 print("Ask a question first before logging feedback!")
+                continue
+            if last_reply_is_formula:
+                log_feedback(
+                    rating="up_formula",
+                    user_query=last_user_queries[-1],
+                    search_query=last_search_query or last_user_queries[-1],
+                    active_device=active_device,
+                    file_name="Standard Engineering Formula",
+                    page="",
+                    paragraph="",
+                )
+                print("👍 Formula feedback logged (excluded from manual-retrieval training).")
                 continue
             top_cid = last_hits[0]["corpus_id"]
             log_feedback(
@@ -452,6 +465,7 @@ def main():
         full_reply = "".join(assistant_reply_parts).strip()
         if full_reply:
             # Store compact user question + assistant answer in multi-turn memory
+            last_reply_is_formula = "Standard Engineering Formula" in full_reply
             chat_history.append({"role": "user", "content": user_input})
             chat_history.append({"role": "assistant", "content": full_reply})
             last_user_queries.append(user_input)

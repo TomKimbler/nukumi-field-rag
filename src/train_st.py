@@ -21,7 +21,10 @@ from sentence_transformers import (
     InputExample,
     losses,
 )
-from torch.utils.data import DataLoader
+try:
+    from sentence_transformers.sentence_transformer.datasets import NoDuplicatesDataLoader
+except ImportError:
+    from sentence_transformers.datasets import NoDuplicatesDataLoader
 from optiDataset import clean_pdf_text
 
 # 1. Configuration & Paths
@@ -109,11 +112,13 @@ def main():
             reader = csv.DictReader(f)
             for row in reader:
                 rating = (row.get("rating") or "").strip().lower()
-                if rating == "up":
+                file_name = (row.get("file_name") or "").strip()
+                if rating == "up" and file_name != "Standard Engineering Formula":
                     query = (row.get("search_query") or row.get("user_query") or "").strip()
                     paragraph = clean_pdf_text((row.get("paragraph") or "").strip())
                     if query and paragraph:
-                        # Weight real field-validated queries 2x relative to synthetic pairs
+                        # Weight real field-validated queries 2x relative to synthetic pairs.
+                        # NoDuplicatesDataLoader guarantees identical pairs never share a batch.
                         train_examples.append(InputExample(texts=[query, paragraph]))
                         train_examples.append(InputExample(texts=[query, paragraph]))
                         up_count += 1
@@ -126,8 +131,9 @@ def main():
 
     print(f"Total training examples: {len(train_examples)}")
 
-    # Batch size 8 with mixed precision (use_amp=True) fits in 8GB VRAM while providing 7 in-batch negatives
-    train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=8)
+    # Batch size 8 with mixed precision (use_amp=True) fits in 8GB VRAM while providing 7 in-batch negatives.
+    # NoDuplicatesDataLoader prevents 2x-weighted 👍 feedback pairs from becoming false in-batch negatives.
+    train_dataloader = NoDuplicatesDataLoader(train_examples, batch_size=8)
     train_loss = losses.MultipleNegativesRankingLoss(model=model)
 
     epochs = 3

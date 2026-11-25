@@ -1,0 +1,30 @@
+[
+  {
+    "query": "What is a thermostat mode deadband?",
+    "expected_file": "RedLINK Operating Guide",
+    "expected_page": 7,
+    "notes": "From field feedback"
+  },
+  {
+    "query": "How many I/O modules does a Honeywell Optimizer Essential support?",
+    "expected_file": "31-00744",
+    "notes": "Optimizer I/O module support"
+  },
+  {
+    "query": "What is the default IP address and login credentials for the CIPer Model 30?",
+    "expected_file": "31-00206",
+    "expected_page": 28,
+    "notes": "Default credentials & IP"
+  },
+  {
+    "query": "How do I set the Protocol and Address DIP switches on an Optimizer Advanced I/O Module?",
+    "expected_file": "31-00589",
+    "expected_page": 57,
+    "notes": "DIP switch addressing"
+  },
+  {
+    "query": "What is the default IP address for an Optimizer Advanced controller?",
+    "expected_file": "31-00584",
+    "notes": "Honeywell Advanced Controller Installation & Commissioning Guide"
+  }
+]
