@@ -194,3 +194,9 @@ This project builds upon **ModernBERT** (developed by Answer.AI, LightOn, and co
     url = "https://arxiv.org/abs/1908.10084",
 }
 ```
+
+---
+
+## License
+
+This project is licensed under the **MIT License** — see [`LICENSE`](LICENSE) for details. Third-party models and libraries (such as ModernBERT and Sentence-Transformers) remain subject to their respective licenses.
