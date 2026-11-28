@@ -18,11 +18,51 @@ pdf_dir = os.path.join(project_root, "pdfFiles")
 corpus_output_dir = os.path.join(project_root, "search_corpus_dataset")
 
 EXCLUDED_PREFIXES = ("ignore_", "exclude_", ".")
+GENERIC_FOLDER_NAMES = {"misc", "unsorted", "other", "general", "temp", "tmp", "pdfs", "manuals"}
 
 
 def is_excluded_name(name: str) -> bool:
     """Return True if a directory or filename starts with 'ignore_', 'exclude_', or '.'."""
     return name.lower().startswith(EXCLUDED_PREFIXES)
+
+
+def format_category_from_path(pdf_directory: str, full_path: str) -> str:
+    """
+    Derive a clean, domain-agnostic category breadcrumb from a PDF's relative subfolder path.
+    Example: `pdfFiles/Honeywell/Optimizer_Advanced/31-00584.pdf` -> `Honeywell > Optimizer Advanced`
+    """
+    rel_dir = os.path.relpath(os.path.dirname(full_path), pdf_directory)
+    if rel_dir in ("", "."):
+        return ""
+    parts: list[str] = []
+    for raw_part in rel_dir.replace("\\", "/").split("/"):
+        if not raw_part or raw_part in (".", ".."):
+            continue
+        cleaned = re.sub(r"[_\s]+", " ", raw_part).strip()
+        if not cleaned or cleaned.lower() in GENERIC_FOLDER_NAMES:
+            continue
+        parts.append(cleaned)
+    return " > ".join(parts)
+
+
+def build_active_pdf_category_map(pdf_directory: str) -> dict[str, str]:
+    """Map active PDF filenames to their clean subfolder category breadcrumb."""
+    return {
+        fname: format_category_from_path(pdf_directory, fpath)
+        for fname, fpath in iter_active_pdf_files(pdf_directory)
+    }
+
+
+def format_context_text(paragraph: str, file_name: str = "", category: str = "") -> str:
+    """
+    Prepend lightweight category & manual-title context to a paragraph for dense embedding
+    and contrastive training so similar text from different vendors/trades stays distinct.
+    """
+    manual_title = os.path.splitext(os.path.basename(file_name))[0].strip() if file_name else ""
+    header_parts = [p for p in (category.strip(), manual_title) if p]
+    if header_parts:
+        return f"[{' | '.join(header_parts)}] {paragraph}"
+    return paragraph
 
 
 def iter_active_pdf_files(pdf_directory: str) -> list[tuple[str, str]]:
@@ -166,6 +206,8 @@ def generate_corpus_paragraphs(pdf_directory: str):
     print(f"Found {len(active_pdfs)} active PDF manuals in {pdf_directory} (excluding ignore_/exclude_).")
 
     for filename, pdf_path in active_pdfs:
+        rel_path = os.path.relpath(pdf_path, pdf_directory).replace("\\", "/")
+        category = format_category_from_path(pdf_directory, pdf_path)
         try:
             reader = PdfReader(pdf_path)
             for page_idx, page in enumerate(reader.pages, start=1):
@@ -176,6 +218,8 @@ def generate_corpus_paragraphs(pdf_directory: str):
                 for para in split_into_paragraphs(cleaned):
                     yield {
                         "file_name": filename,
+                        "rel_path": rel_path,
+                        "category": category,
                         "page": page_idx,
                         "paragraph": para,
                     }

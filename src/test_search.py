@@ -5,6 +5,7 @@ for HVAC/BMS Manuals.
 Powered by Sentence-Transformers and ModernBERT (Warner et al., 2024, arXiv:2412.13663).
 """
 
+import hashlib
 import math
 import os
 import re
@@ -12,7 +13,12 @@ from collections import Counter, defaultdict
 import torch
 from datasets import Dataset, load_from_disk
 from sentence_transformers import SentenceTransformer, util
-from optiDataset import generate_corpus_paragraphs, iter_active_pdf_files
+from optiDataset import (
+    build_active_pdf_category_map,
+    format_context_text,
+    generate_corpus_paragraphs,
+    iter_active_pdf_files,
+)
 
 # 1. Configuration & Paths
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -65,6 +71,7 @@ class BM25Index:
         self,
         corpus: list[str],
         file_names: list[str] | None = None,
+        categories: list[str] | None = None,
         k1: float = 1.5,
         b: float = 0.75,
     ):
@@ -77,11 +84,12 @@ class BM25Index:
 
         total_len = 0
         for doc_id, doc in enumerate(corpus):
-            if file_names and doc_id < len(file_names):
-                manual_title = os.path.splitext(file_names[doc_id])[0]
-                index_text = f"{manual_title} {doc}"
-            else:
-                index_text = doc
+            prefix_parts = []
+            if categories and doc_id < len(categories) and categories[doc_id]:
+                prefix_parts.append(categories[doc_id])
+            if file_names and doc_id < len(file_names) and file_names[doc_id]:
+                prefix_parts.append(os.path.splitext(file_names[doc_id])[0])
+            index_text = f"{' '.join(prefix_parts)} {doc}" if prefix_parts else doc
             tokens = tokenize_for_bm25(index_text)
             length = len(tokens)
             self.doc_len[doc_id] = length
@@ -192,17 +200,58 @@ def load_or_build_corpus() -> Dataset | None:
     return corpus_dataset
 
 
-def load_or_compute_embeddings(model: SentenceTransformer, paragraphs: list[str]) -> torch.Tensor:
+EMBEDDING_CACHE_VERSION = 2
+
+
+def resolve_corpus_categories(
+    file_names: list[str],
+    dataset_categories: list[str] | None = None,
+) -> list[str]:
     """
-    Load cached paragraph embeddings if they match the current corpus size and model,
-    otherwise encode all paragraphs and cache them to disk for instant future startups.
+    Resolve each chunk's category breadcrumb, preferring the live `pdfFiles/` subfolder
+    structure so reorganizing PDFs into folders takes effect immediately on startup.
+    """
+    live_map = build_active_pdf_category_map(pdf_dir) if os.path.exists(pdf_dir) else {}
+    resolved: list[str] = []
+    for i, fname in enumerate(file_names):
+        if fname in live_map:
+            resolved.append(live_map[fname])
+        elif dataset_categories and i < len(dataset_categories):
+            resolved.append(dataset_categories[i] or "")
+        else:
+            resolved.append("")
+    return resolved
+
+
+def _compute_metadata_signature(file_names: list[str], categories: list[str]) -> str:
+    h = hashlib.sha256()
+    for fn, cat in zip(file_names, categories):
+        h.update(f"{cat}|{fn}\n".encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def load_or_compute_embeddings(
+    model: SentenceTransformer,
+    paragraphs: list[str],
+    file_names: list[str] | None = None,
+    categories: list[str] | None = None,
+) -> torch.Tensor:
+    """
+    Load cached paragraph embeddings if they match the current corpus size and folder/manual
+    metadata, otherwise encode all context-enriched paragraphs and cache them to disk.
     """
     device = model.device
+    fnames = file_names or [""] * len(paragraphs)
+    cats = categories or [""] * len(paragraphs)
+    meta_sig = _compute_metadata_signature(fnames, cats)
+
     if os.path.exists(embeddings_cache_path):
         try:
             cached = torch.load(embeddings_cache_path, map_location=device, weights_only=True)
             if (
                 isinstance(cached, dict)
+                and cached.get("cache_version") == EMBEDDING_CACHE_VERSION
+                and cached.get("meta_sig") == meta_sig
                 and cached.get("num_paragraphs") == len(paragraphs)
                 and cached["embeddings"].shape[0] == len(paragraphs)
             ):
@@ -211,16 +260,24 @@ def load_or_compute_embeddings(model: SentenceTransformer, paragraphs: list[str]
         except Exception as e:
             print(f"Recomputing embeddings (cache could not be loaded: {e})")
 
-    print(f"Indexing {len(paragraphs)} paragraphs into vector space...")
+    texts_to_encode = [
+        format_context_text(p, fn, cat) for p, fn, cat in zip(paragraphs, fnames, cats)
+    ]
+    print(f"Indexing {len(paragraphs)} context-enriched paragraphs into vector space...")
     embeddings = model.encode(
-        paragraphs,
+        texts_to_encode,
         batch_size=32,
         convert_to_tensor=True,
         show_progress_bar=True,
         normalize_embeddings=True,
     )
     torch.save(
-        {"num_paragraphs": len(paragraphs), "embeddings": embeddings.cpu()},
+        {
+            "cache_version": EMBEDDING_CACHE_VERSION,
+            "meta_sig": meta_sig,
+            "num_paragraphs": len(paragraphs),
+            "embeddings": embeddings.cpu(),
+        },
         embeddings_cache_path,
     )
     print(f"Cached embeddings to {embeddings_cache_path} for fast future startups.")
@@ -232,37 +289,40 @@ def filter_active_corpus(
     file_names: list[str],
     pages: list[int],
     paragraph_embeddings: torch.Tensor,
-) -> tuple[list[str], list[str], list[int], torch.Tensor]:
+    categories: list[str] | None = None,
+) -> tuple[list[str], list[str], list[int], torch.Tensor, list[str]]:
     """
     Live subfolder exclusion filter: if `pdfFiles/` exists, check which PDFs are currently
     active (not inside an `ignore_` or `exclude_` folder or prefixed with `ignore_`/`exclude_`).
     Any excluded PDFs are masked out in memory without invalidating `corpus_embeddings.pt`.
     """
+    cats = categories if categories is not None else resolve_corpus_categories(file_names)
     if not os.path.exists(pdf_dir):
-        return paragraphs, file_names, pages, paragraph_embeddings
+        return paragraphs, file_names, pages, paragraph_embeddings, cats
 
     active_pdfs = iter_active_pdf_files(pdf_dir)
     if not active_pdfs:
-        return paragraphs, file_names, pages, paragraph_embeddings
+        return paragraphs, file_names, pages, paragraph_embeddings, cats
 
     active_names = {fname for fname, _ in active_pdfs}
     keep_indices = [i for i, fname in enumerate(file_names) if fname in active_names]
 
     if len(keep_indices) == len(paragraphs) or len(keep_indices) == 0:
-        return paragraphs, file_names, pages, paragraph_embeddings
+        return paragraphs, file_names, pages, paragraph_embeddings, cats
 
-    excluded_Paragraphs = len(paragraphs) - len(keep_indices)
+    excluded_paragraphs = len(paragraphs) - len(keep_indices)
     excluded_files = len(set(file_names) - active_names)
     print(
-        f"Live filter: excluded {excluded_files} manual(s) ({excluded_Paragraphs} paragraphs) "
+        f"Live filter: excluded {excluded_files} manual(s) ({excluded_paragraphs} paragraphs) "
         f"marked with ignore_/exclude_."
     )
     filtered_paragraphs = [paragraphs[i] for i in keep_indices]
     filtered_files = [file_names[i] for i in keep_indices]
     filtered_pages = [pages[i] for i in keep_indices]
+    filtered_cats = [cats[i] for i in keep_indices]
     idx_tensor = torch.tensor(keep_indices, dtype=torch.long, device=paragraph_embeddings.device)
     filtered_embeddings = paragraph_embeddings.index_select(0, idx_tensor)
-    return filtered_paragraphs, filtered_files, filtered_pages, filtered_embeddings
+    return filtered_paragraphs, filtered_files, filtered_pages, filtered_embeddings, filtered_cats
 
 
 def main():
@@ -281,14 +341,18 @@ def main():
     paragraphs = list(corpus_dataset["paragraph"])
     file_names = list(corpus_dataset["file_name"])
     pages = list(corpus_dataset["page"])
+    raw_cats = list(corpus_dataset["category"]) if "category" in corpus_dataset.column_names else None
+    categories = resolve_corpus_categories(file_names, raw_cats)
 
-    paragraph_embeddings = load_or_compute_embeddings(model, paragraphs)
-    paragraphs, file_names, pages, paragraph_embeddings = filter_active_corpus(
-        paragraphs, file_names, pages, paragraph_embeddings
+    paragraph_embeddings = load_or_compute_embeddings(
+        model, paragraphs, file_names=file_names, categories=categories
+    )
+    paragraphs, file_names, pages, paragraph_embeddings, categories = filter_active_corpus(
+        paragraphs, file_names, pages, paragraph_embeddings, categories=categories
     )
 
     print(f"Building BM25 lexical index for {len(paragraphs)} paragraphs...")
-    bm25_index = BM25Index(paragraphs, file_names=file_names)
+    bm25_index = BM25Index(paragraphs, file_names=file_names, categories=categories)
 
     print("\n" + "=" * 60)
     print("🚀 HYBRID SEARCH ENGINE READY (ModernBERT + BM25 RRF)")
@@ -324,6 +388,7 @@ def main():
             matched_paragraph = paragraphs[para_id]
             source_file = file_names[para_id]
             source_page = pages[para_id]
+            source_cat = categories[para_id]
 
             sem_str = (
                 f"{hit['semantic_score']:.2f} (#{hit['semantic_rank']})"
@@ -340,7 +405,8 @@ def main():
                 f"\nResult #{i + 1} | Hybrid: {hit['hybrid_score']:.2f} "
                 f"[Semantic: {sem_str} | BM25: {bm25_str}]"
             )
-            print(f"📄 Source: {source_file} (Page {source_page})")
+            cat_prefix = f"[{source_cat}] " if source_cat else ""
+            print(f"📄 Source: {cat_prefix}{source_file} (Page {source_page})")
             print(f"{matched_paragraph}")
             print("-" * 60)
 

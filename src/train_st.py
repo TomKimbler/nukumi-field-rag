@@ -25,11 +25,12 @@ try:
     from sentence_transformers.sentence_transformer.datasets import NoDuplicatesDataLoader
 except ImportError:
     from sentence_transformers.datasets import NoDuplicatesDataLoader
-from optiDataset import clean_pdf_text
+from optiDataset import build_active_pdf_category_map, clean_pdf_text, format_context_text
 
 # 1. Configuration & Paths
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
+pdf_dir = os.path.join(project_root, "pdfFiles")
 csv_path = os.path.join(project_root, "synthetic_queries.csv")
 feedback_csv_path = os.path.join(project_root, "feedback_log.csv")
 
@@ -90,16 +91,21 @@ def main():
     # Cap sequence length to 512 tokens for paragraph retrieval to fit comfortably in 8GB VRAM
     model.max_seq_length = 512
 
-    # Load and clean CSV training pairs
+    live_cat_map = build_active_pdf_category_map(pdf_dir) if os.path.exists(pdf_dir) else {}
+
+    # Load and clean CSV training pairs (enriched with folder category & manual title when available)
     print("Loading training pairs from CSV...")
     train_examples = []
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            query = row["query"].strip()
-            paragraph = clean_pdf_text(row["paragraph"].strip())
+            query = (row.get("query") or "").strip()
+            paragraph = clean_pdf_text((row.get("paragraph") or "").strip())
+            file_name = (row.get("file_name") or "").strip()
+            category = live_cat_map.get(file_name, (row.get("category") or "").strip())
             if query and paragraph:
-                train_examples.append(InputExample(texts=[query, paragraph]))
+                passage = format_context_text(paragraph, file_name=file_name, category=category)
+                train_examples.append(InputExample(texts=[query, passage]))
 
     synthetic_count = len(train_examples)
     print(f"Loaded {synthetic_count} synthetic training pairs from {csv_path}.")
@@ -116,11 +122,13 @@ def main():
                 if rating == "up" and file_name != "Standard Engineering Formula":
                     query = (row.get("search_query") or row.get("user_query") or "").strip()
                     paragraph = clean_pdf_text((row.get("paragraph") or "").strip())
+                    category = live_cat_map.get(file_name, "")
                     if query and paragraph:
+                        passage = format_context_text(paragraph, file_name=file_name, category=category)
                         # Weight real field-validated queries 2x relative to synthetic pairs.
                         # NoDuplicatesDataLoader guarantees identical pairs never share a batch.
-                        train_examples.append(InputExample(texts=[query, paragraph]))
-                        train_examples.append(InputExample(texts=[query, paragraph]))
+                        train_examples.append(InputExample(texts=[query, passage]))
+                        train_examples.append(InputExample(texts=[query, passage]))
                         up_count += 1
                 elif rating == "down":
                     down_count += 1

@@ -46,6 +46,7 @@ from test_search import (
     load_or_compute_embeddings,
     model_path,
     pdf_dir,
+    resolve_corpus_categories,
 )
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -213,6 +214,7 @@ class FieldSupportHTTPServer(ThreadingHTTPServer):
         paragraphs: list[str],
         file_names: list[str],
         pages: list[int],
+        categories: list[str],
         paragraph_embeddings: torch.Tensor,
         bm25_index: BM25Index,
         manual_count: int,
@@ -223,6 +225,7 @@ class FieldSupportHTTPServer(ThreadingHTTPServer):
         self.paragraphs = paragraphs
         self.file_names = file_names
         self.pages = pages
+        self.categories = categories
         self.paragraph_embeddings = paragraph_embeddings
         self.bm25_index = bm25_index
         self.manual_count = manual_count
@@ -640,6 +643,7 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
             file_names=self.server.file_names,
             active_device=session["active_device"],
             top_k=4,
+            categories=self.server.categories,
         )
         session["last_hits"] = hits
         turn_id = secrets.token_hex(6)
@@ -656,6 +660,7 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
         citations_payload = [
             {
                 "file_name": self.server.file_names[h["corpus_id"]],
+                "category": self.server.categories[h["corpus_id"]],
                 "page": int(self.server.pages[h["corpus_id"]]),
                 "paragraph": self.server.paragraphs[h["corpus_id"]],
                 "hybrid_score": round(float(h["hybrid_score"]), 3),
@@ -679,6 +684,7 @@ class FieldSupportHandler(BaseHTTPRequestHandler):
             file_names=self.server.file_names,
             pages=self.server.pages,
             active_device=session["active_device"],
+            categories=self.server.categories,
         )
         ollama_model, temperature, num_ctx, system_prompt = load_modelfile_config(modelfile_path)
 
@@ -731,17 +737,21 @@ def main():
     paragraphs = list(corpus_dataset["paragraph"])
     file_names = list(corpus_dataset["file_name"])
     pages = list(corpus_dataset["page"])
+    raw_cats = list(corpus_dataset["category"]) if "category" in corpus_dataset.column_names else None
+    categories = resolve_corpus_categories(file_names, raw_cats)
 
-    paragraph_embeddings = load_or_compute_embeddings(retriever, paragraphs)
+    paragraph_embeddings = load_or_compute_embeddings(
+        retriever, paragraphs, file_names=file_names, categories=categories
+    )
     if retriever.device.type == "cpu":
         paragraph_embeddings = paragraph_embeddings.cpu()
-    paragraphs, file_names, pages, paragraph_embeddings = filter_active_corpus(
-        paragraphs, file_names, pages, paragraph_embeddings
+    paragraphs, file_names, pages, paragraph_embeddings, categories = filter_active_corpus(
+        paragraphs, file_names, pages, paragraph_embeddings, categories=categories
     )
     manual_count = get_manual_count(file_names)
 
     print(f"Building BM25 lexical index over {len(paragraphs)} paragraphs ({manual_count} manuals)...")
-    bm25_index = BM25Index(paragraphs, file_names=file_names)
+    bm25_index = BM25Index(paragraphs, file_names=file_names, categories=categories)
 
     themes = [t["id"] for t in list_available_themes()]
     server = FieldSupportHTTPServer(
@@ -751,6 +761,7 @@ def main():
         paragraphs=paragraphs,
         file_names=file_names,
         pages=pages,
+        categories=categories,
         paragraph_embeddings=paragraph_embeddings,
         bm25_index=bm25_index,
         manual_count=manual_count,

@@ -9,7 +9,13 @@ import ollama
 from datasets import load_from_disk
 from pypdf import PdfReader
 from tqdm import tqdm
-from optiDataset import clean_pdf_text, iter_active_pdf_files, split_into_paragraphs
+from optiDataset import (
+    build_active_pdf_category_map,
+    clean_pdf_text,
+    format_category_from_path,
+    iter_active_pdf_files,
+    split_into_paragraphs,
+)
 
 # Configuration
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -67,17 +73,18 @@ def load_domain_config() -> dict:
 DOMAIN_CFG = load_domain_config()
 
 
-def generate_query_for_paragraph(paragraph: str, file_name: str) -> str | None:
+def generate_query_for_paragraph(paragraph: str, file_name: str, category: str = "") -> str | None:
     manual_title = os.path.splitext(file_name)[0]
     role = DOMAIN_CFG["domain_role"]
     equip_examples = DOMAIN_CFG["domain_equipment_examples"]
     good_ex = ", ".join(f'"{q}"' for q in DOMAIN_CFG["query_good_examples"])
     bad_ex = ", ".join(f'"{q}"' for q in DOMAIN_CFG["query_bad_examples"])
+    category_line = f"Equipment / Trade Category: {category}\n" if category else ""
 
     prompt = f"""You are an expert {role}. 
 Read the following paragraph extracted from a technical manual. 
 
-Source Manual: {manual_title}
+{category_line}Source Manual: {manual_title}
 
 Your task: Write ONE realistic, conversational question that a technician would ask a support chatbot to find this exact information.
 
@@ -112,12 +119,18 @@ def load_all_paragraphs() -> list[dict[str, str]]:
     """
     active_pdfs = iter_active_pdf_files(pdf_dir)
     active_names = {fname for fname, _ in active_pdfs} if active_pdfs else None
+    live_cat_map = build_active_pdf_category_map(pdf_dir) if active_pdfs else {}
 
     if os.path.exists(corpus_path):
         print(f"Loading cleaned paragraphs from {corpus_path}...")
         dataset = load_from_disk(corpus_path)
+        has_cat = "category" in dataset.column_names
         return [
-            {"file_name": row["file_name"], "paragraph": row["paragraph"]}
+            {
+                "file_name": row["file_name"],
+                "category": live_cat_map.get(row["file_name"], row["category"] if has_cat else ""),
+                "paragraph": row["paragraph"],
+            }
             for row in dataset
             if len(row["paragraph"]) >= 150
             and (active_names is None or row["file_name"] in active_names)
@@ -134,6 +147,7 @@ def load_all_paragraphs() -> list[dict[str, str]]:
     random.shuffle(shuffled_pdfs)
 
     for filename, pdf_path in shuffled_pdfs:
+        category = format_category_from_path(pdf_dir, pdf_path)
         try:
             reader = PdfReader(pdf_path)
             for page in reader.pages:
@@ -142,7 +156,11 @@ def load_all_paragraphs() -> list[dict[str, str]]:
                     cleaned = clean_pdf_text(extracted)
                     paragraphs = split_into_paragraphs(cleaned, min_chars=150)
                     for para in paragraphs:
-                        all_records.append({"file_name": filename, "paragraph": para})
+                        all_records.append({
+                            "file_name": filename,
+                            "category": category,
+                            "paragraph": para,
+                        })
         except Exception as e:
             print(f"Error reading {filename}: {e}")
 
@@ -260,18 +278,27 @@ def main():
     )
 
     write_mode = "a" if (args.resume and os.path.exists(output_csv_path) and os.path.getsize(output_csv_path) > 0) else "w"
+    fieldnames = ["query", "paragraph", "file_name", "category"]
+    if write_mode == "a":
+        with open(output_csv_path, "r", encoding="utf-8") as existing_f:
+            existing_reader = csv.reader(existing_f)
+            existing_header = next(existing_reader, None)
+            if existing_header:
+                fieldnames = existing_header
+
     generated_count = 0
 
     # Stream rows to disk incrementally so interrupted runs preserve progress
     with open(output_csv_path, write_mode, newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["query", "paragraph"])
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         if write_mode == "w":
             writer.writeheader()
 
         for item in tqdm(records_to_process, desc="Generating Queries"):
             para = item["paragraph"]
             fname = item["file_name"]
-            query = generate_query_for_paragraph(para, fname)
+            cat = item.get("category", "")
+            query = generate_query_for_paragraph(para, fname, category=cat)
 
             # Allow natural conversational questions between 3 and 30 words
             if query and query.strip().upper() != "SKIP":
@@ -280,6 +307,8 @@ def main():
                     writer.writerow({
                         "query": query,
                         "paragraph": para,
+                        "file_name": fname,
+                        "category": cat,
                     })
                     f.flush()
                     generated_count += 1

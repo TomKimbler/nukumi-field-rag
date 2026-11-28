@@ -86,11 +86,12 @@ function renderCitationsDrawer(hits, turnId) {
   let cards = '';
   hits.forEach((h, i) => {
     const url = '/pdf/' + encodeURIComponent(h.file_name) + '#page=' + h.page;
+    const catBadge = h.category ? `<span class="cite-cat" style="opacity:0.75;font-size:0.85em;margin-right:6px;">[${escapeHtml(h.category)}]</span>` : '';
     cards += `
       <div class="cite-card">
         <div class="cite-meta">
           <a class="pdf-link" style="margin:0;padding:3px 8px;" href="${url}" target="_blank" rel="noopener">
-            [${i + 1}] 📄 ${escapeHtml(h.file_name)} (p.${h.page}) ↗
+            [${i + 1}] 📄 ${catBadge}${escapeHtml(h.file_name)} (p.${h.page}) ↗
           </a>
           <div class="cite-scores">
             <span>Hybrid: ${h.hybrid_score.toFixed(2)} | Sem: ${h.semantic_score.toFixed(2)} | BM25: ${h.bm25_score.toFixed(1)}</span>

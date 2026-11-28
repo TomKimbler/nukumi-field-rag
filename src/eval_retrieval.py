@@ -30,6 +30,7 @@ from test_search import (
     load_or_build_corpus,
     load_or_compute_embeddings,
     model_path,
+    resolve_corpus_categories,
 )
 
 DEFAULT_EVAL_FILE = os.path.join(project_root, "eval_queries.json")
@@ -123,14 +124,18 @@ def main():
     paragraphs = list(corpus_dataset["paragraph"])
     file_names = list(corpus_dataset["file_name"])
     pages = list(corpus_dataset["page"])
+    raw_cats = list(corpus_dataset["category"]) if "category" in corpus_dataset.column_names else None
+    categories = resolve_corpus_categories(file_names, raw_cats)
 
-    paragraph_embeddings = load_or_compute_embeddings(model, paragraphs)
+    paragraph_embeddings = load_or_compute_embeddings(
+        model, paragraphs, file_names=file_names, categories=categories
+    )
     if model.device.type == "cpu":
         paragraph_embeddings = paragraph_embeddings.cpu()
-    paragraphs, file_names, pages, paragraph_embeddings = filter_active_corpus(
-        paragraphs, file_names, pages, paragraph_embeddings
+    paragraphs, file_names, pages, paragraph_embeddings, categories = filter_active_corpus(
+        paragraphs, file_names, pages, paragraph_embeddings, categories=categories
     )
-    bm25_index = BM25Index(paragraphs, file_names=file_names)
+    bm25_index = BM25Index(paragraphs, file_names=file_names, categories=categories)
 
     metrics = {
         "semantic": {"r1": 0, "rk": 0, "mrr": 0.0},

@@ -25,6 +25,7 @@ from test_search import (
     load_or_compute_embeddings,
     model_path,
     pdf_dir,
+    resolve_corpus_categories,
 )
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -152,10 +153,11 @@ def retrieve_context_hits(
     file_names: list[str],
     active_device: str | None = None,
     top_k: int = 4,
+    categories: list[str] | None = None,
 ) -> list[dict]:
     """
     Run Hybrid Search (ModernBERT + BM25 RRF) and optionally prioritize/filter
-    manuals matching `active_device` if set by the technician.
+    manuals matching `active_device` (by subfolder category or filename).
     """
     pool_size = 80 if active_device else 50
     hits = hybrid_search(
@@ -169,10 +171,13 @@ def retrieve_context_hits(
 
     if active_device:
         device_terms = [t.lower() for t in active_device.split() if t.strip()]
-        filtered = [
-            h for h in hits
-            if all(term in file_names[h["corpus_id"]].lower() for term in device_terms)
-        ]
+        filtered = []
+        for h in hits:
+            cid = h["corpus_id"]
+            cat = categories[cid] if (categories and cid < len(categories)) else ""
+            haystack = f"{cat} {file_names[cid]}".lower()
+            if all(term in haystack for term in device_terms):
+                filtered.append(h)
         if filtered:
             return filtered[:top_k]
 
@@ -186,6 +191,7 @@ def format_rag_prompt(
     file_names: list[str],
     pages: list[int],
     active_device: str | None,
+    categories: list[str] | None = None,
 ) -> str:
     """Build the grounded RAG prompt combining retrieved manual excerpts and the technician's question."""
     excerpts = []
@@ -194,8 +200,10 @@ def format_rag_prompt(
         src_file = file_names[cid]
         src_page = pages[cid]
         para_text = paragraphs[cid]
+        src_cat = categories[cid] if (categories and cid < len(categories)) else ""
+        cat_part = f"Category: {src_cat} | " if src_cat else ""
         excerpts.append(
-            f"[Excerpt {idx} | Manual: {src_file} | Page: {src_page}]\n{para_text}"
+            f"[Excerpt {idx} | {cat_part}Manual: {src_file} | Page: {src_page}]\n{para_text}"
         )
 
     context_block = "\n\n".join(excerpts)
@@ -281,18 +289,22 @@ def main():
     paragraphs = list(corpus_dataset["paragraph"])
     file_names = list(corpus_dataset["file_name"])
     pages = list(corpus_dataset["page"])
+    raw_cats = list(corpus_dataset["category"]) if "category" in corpus_dataset.column_names else None
+    categories = resolve_corpus_categories(file_names, raw_cats)
     manual_count = get_manual_count(file_names)
 
-    paragraph_embeddings = load_or_compute_embeddings(retriever, paragraphs)
+    paragraph_embeddings = load_or_compute_embeddings(
+        retriever, paragraphs, file_names=file_names, categories=categories
+    )
     if retriever.device.type == "cpu":
         paragraph_embeddings = paragraph_embeddings.cpu()
-    paragraphs, file_names, pages, paragraph_embeddings = filter_active_corpus(
-        paragraphs, file_names, pages, paragraph_embeddings
+    paragraphs, file_names, pages, paragraph_embeddings, categories = filter_active_corpus(
+        paragraphs, file_names, pages, paragraph_embeddings, categories=categories
     )
     manual_count = get_manual_count(file_names)
 
     print(f"Building BM25 lexical index over {len(paragraphs)} paragraphs ({manual_count} manuals)...")
-    bm25_index = BM25Index(paragraphs, file_names=file_names)
+    bm25_index = BM25Index(paragraphs, file_names=file_names, categories=categories)
 
     ollama_model, temperature, num_ctx, system_prompt = load_modelfile_config(modelfile_path)
 
@@ -418,6 +430,7 @@ def main():
             file_names=file_names,
             active_device=active_device,
             top_k=4,
+            categories=categories,
         )
 
         # 2. Build grounded RAG prompt
@@ -428,6 +441,7 @@ def main():
             file_names=file_names,
             pages=pages,
             active_device=active_device,
+            categories=categories,
         )
 
         # Re-read Modelfile dynamically so live prompt/parameter edits take effect without restarting
