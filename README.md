@@ -169,6 +169,9 @@ As technicians use the Mobile PWA or CLI in the field:
 
 This project builds upon **ModernBERT** (developed by Answer.AI, LightOn, and contributors under the Apache 2.0 License) and **Sentence-Transformers**.
 
+### Development & Tooling
+Nukumi is an independent open-source project conceived, directed, and field-tested by Thomas Kimbler. Portions of the codebase implementation, refactoring, and code review were built with the assistance of Google Antigravity (Gemini). This project is not affiliated with or endorsed by Google.
+
 ### ModernBERT
 ```bibtex
 @misc{warner2024smarterbetterfasterlonger,
